@@ -1,0 +1,42 @@
+[server]
+port = 6767
+host = "127.0.0.1"
+
+[binaries]
+claude = 'claude'
+codex = 'codex'
+opencode = 'opencode'
+
+[models]
+claude = 'claude-opus-4-7'
+codex = 'gpt-5.5'
+deepseek_pro = 'deepseek/deepseek-v4-pro'
+deepseek_flash = 'deepseek/deepseek-v4-flash'
+
+[effort]
+claude = 'medium'
+codex = 'medium'
+deepseek = 'medium'
+
+[roles]
+claude = 'Architecture review, implementation guidance, and Unity/game-dev judgment. Do not delegate unless the user explicitly asks.'
+codex = 'Implement code changes, inspect local files, run focused verification, and report touched files. Do not delegate unless the user explicitly asks.'
+deepseek = 'Small bounded analysis and menial support tasks only. Do not delegate work back to other agents.'
+
+[model_options]
+claude = ['claude-opus-4-7', 'claude-sonnet-4-5']
+codex = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex']
+deepseek = ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-flash']
+
+[effort_options]
+claude = ['low', 'medium', 'high']
+codex = ['low', 'medium', 'high', 'xhigh']
+deepseek = ['low', 'medium', 'high']
+
+[dispatch]
+timeout_seconds = 0
+max_prompt_chars = 25000
+
+[compact]
+auto_threshold_lines = 2000
+preserve_last_mention = true

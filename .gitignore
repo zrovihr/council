@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+.parcel-cache/
+
+# Council runtime state
+sessions/
+chat.md
+chat-archive/
+*.log
+*.tmp
+council-prompt-*.md
+
+# Local overrides
+config.local.toml
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
