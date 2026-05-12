@@ -9,38 +9,59 @@
 </head>
 <body>
 <div id="app">
+  <aside id="session-rail">
+    <div id="session-rail-header">
+      <div id="session-title">Sessions</div>
+      <button id="new-session-btn" type="button" title="Create a new session">+</button>
+    </div>
+    <form id="new-session-form" class="hidden">
+      <input id="new-session-name" type="text" placeholder="Name">
+      <input id="new-session-project" type="text" placeholder="Project root">
+      <div class="session-form-actions">
+        <button id="create-session-btn" type="submit">Create</button>
+        <button id="cancel-session-btn" type="button">Cancel</button>
+      </div>
+    </form>
+    <div id="session-list"></div>
+  </aside>
+  <section id="main-column">
+    <div id="council-logo"><span class="the">THE</span><span class="council">COUNCIL</span></div>
+    <header id="top-bar">
+      <div id="project-block">
+        <span id="project-name"></span>
+        <div id="agent-models"></div>
+      </div>
+      <button id="config-toggle-btn" title="Edit agent model, effort, and role">Config</button>
+      <span id="status-indicator" class="idle">&#9679; idle</span>
+      <button id="cancel-btn" class="hidden" title="Stop active agent">Cancel</button>
+      <button id="compact-btn" title="Summarize chat log">/compact</button>
+    </header>
+    <section id="config-panel" class="hidden" aria-label="Agent configuration">
+      <label id="global-config-toggle">
+        <input id="global-config-checkbox" type="checkbox">
+        global defaults
+      </label>
+      <div id="config-grid"></div>
+      <div id="config-status"></div>
+    </section>
+    <main id="chat-area">
+      <div id="chat-inner"></div>
+    </main>
+    <button id="new-msgs-btn" class="hidden">New messages &#8595;</button>
+    <footer id="input-bar">
+      <div id="agent-buttons" aria-label="Agents">
+        <button class="agent-btn claude" type="button" data-agent="claude">@claude</button>
+        <button class="agent-btn codex" type="button" data-agent="codex">@codex</button>
+        <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
+      </div>
+      <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use plain names when not summoning."></textarea>
+      <button id="send-btn">Send</button>
+    </footer>
+  </section>
   <aside id="trace-panel">
     <div id="trace-title">Agent Trace</div>
     <div id="trace-list"></div>
   </aside>
-  <div id="council-logo"><span class="the">THE</span><span class="council">COUNCIL</span></div>
-  <header id="top-bar">
-    <div id="project-block">
-      <span id="project-name"></span>
-      <div id="agent-models"></div>
-    </div>
-    <button id="config-toggle-btn" title="Edit agent model, effort, and role">Config</button>
-    <span id="status-indicator" class="idle">&#9679; idle</span>
-    <button id="cancel-btn" class="hidden" title="Stop active agent">Cancel</button>
-    <button id="compact-btn" title="Summarize chat log">/compact</button>
-  </header>
-  <section id="config-panel" class="hidden" aria-label="Agent configuration">
-    <div id="config-grid"></div>
-    <div id="config-status"></div>
-  </section>
-  <main id="chat-area">
-    <div id="chat-inner"></div>
-  </main>
-  <button id="new-msgs-btn" class="hidden">New messages &#8595;</button>
-  <footer id="input-bar">
-    <div id="agent-buttons" aria-label="Agents">
-      <button class="agent-btn claude" type="button" data-agent="claude">@claude</button>
-      <button class="agent-btn codex" type="button" data-agent="codex">@codex</button>
-      <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
-    </div>
-    <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use plain names when not summoning."></textarea>
-    <button id="send-btn">Send</button>
-  </footer>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>

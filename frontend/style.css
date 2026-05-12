@@ -6,7 +6,7 @@
   --border: #27272a;
   --text: #dcdcdc;
   --text-dim: #a1a1aa;
-  --accent: #3b82f6;
+  --accent: #f59e0b;
   --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
   --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   --claude: #7dd3fc;
@@ -34,24 +34,192 @@ body {
 }
 
 #app {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 320px;
   height: 100vh;
-  max-width: 960px;
-  margin: 0 auto;
+  width: 100vw;
 }
 
-#trace-panel {
-  position: fixed;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 300px;
+#main-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- Session Rail ---- */
+
+#session-rail {
   background: #111113;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  z-index: 5;
+  min-width: 0;
+}
+
+#session-rail-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+#session-title {
+  color: var(--text);
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#new-session-btn {
+  background: #18181b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--mono);
+  height: 24px;
+  line-height: 1;
+  width: 28px;
+}
+
+#new-session-btn:hover {
+  border-color: var(--accent);
+}
+
+#new-session-form {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+}
+
+#new-session-form.hidden {
+  display: none;
+}
+
+#new-session-form input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  min-width: 0;
+  outline: none;
+  padding: 5px 7px;
+}
+
+#new-session-form input:focus {
+  border-color: var(--accent);
+}
+
+.session-form-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.session-form-actions button {
+  background: #18181b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.session-form-actions button:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+#session-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.session-item {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  min-height: 52px;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.session-item:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: var(--border);
+}
+
+.session-item.active {
+  background: rgba(245,158,11,0.12);
+  border-color: rgba(245,158,11,0.55);
+}
+
+.session-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.session-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-project {
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-delete {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  opacity: 0;
+  padding: 0 4px;
+}
+
+.session-item:hover .session-delete {
+  opacity: 1;
+}
+
+.session-delete:hover {
+  color: #fca5a5;
+}
+
+#trace-panel {
+  background: #111113;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 #trace-title {
@@ -96,23 +264,10 @@ body {
   overflow-wrap: anywhere;
 }
 
-@media (min-width: 1280px) {
-  #app {
-    margin-left: 320px;
-    margin-right: auto;
-  }
-}
-
-@media (max-width: 1279px) {
-  #trace-panel {
-    display: none;
-  }
-}
-
 /* ---- Council Logo ---- */
 
 #council-logo {
-  position: fixed;
+  position: absolute;
   top: 12px;
   right: 18px;
   z-index: 20;
@@ -153,17 +308,22 @@ body {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  min-width: 0;
 }
 
 #project-block {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
 }
 
 #project-name {
   font-weight: 600;
   font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #agent-models {
@@ -315,6 +475,21 @@ body {
   margin-top: 6px;
 }
 
+#global-config-toggle {
+  align-items: center;
+  color: var(--text-dim);
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: 11px;
+  gap: 6px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+#global-config-toggle input {
+  accent-color: var(--accent);
+}
+
 @media (max-width: 760px) {
   .config-row {
     grid-template-columns: 1fr;
@@ -328,6 +503,7 @@ body {
 
 #chat-area {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
 }
@@ -429,7 +605,7 @@ body {
 #new-msgs-btn {
   position: fixed;
   bottom: 90px;
-  left: 50%;
+  left: calc(220px + (100vw - 540px) / 2);
   transform: translateX(-50%);
   background: var(--accent);
   color: #fff;
@@ -455,6 +631,7 @@ body {
   background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  min-width: 0;
 }
 
 #agent-buttons {
@@ -494,6 +671,7 @@ body {
   font-size: 14px;
   line-height: 1.5;
   outline: none;
+  min-width: 0;
 }
 #msg-input:focus {
   border-color: var(--accent);
@@ -549,7 +727,7 @@ body {
 }
 .ac-row.selected,
 .ac-row:hover {
-  background: rgba(59,130,246,0.18);
+  background: rgba(245,158,11,0.18);
 }
 .ac-kind {
   font-size: 10px;
@@ -575,4 +753,31 @@ body {
   padding: 6px 10px;
   color: var(--text-dim);
   font-style: italic;
+}
+
+@media (max-width: 1080px) {
+  #app {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+  #trace-panel {
+    display: none;
+  }
+  #new-msgs-btn {
+    left: calc(210px + (100vw - 210px) / 2);
+  }
+}
+
+@media (max-width: 760px) {
+  #app {
+    grid-template-columns: 1fr;
+  }
+  #session-rail {
+    display: none;
+  }
+  #new-msgs-btn {
+    left: 50%;
+  }
+  #top-bar {
+    flex-wrap: wrap;
+  }
 }

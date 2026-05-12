@@ -1,4 +1,4 @@
-// Council App — Frontend Logic
+// Council App - Multi-session frontend logic
 
 (() => {
   const chatInner = document.getElementById('chat-inner');
@@ -17,12 +17,21 @@
   const configPanel = document.getElementById('config-panel');
   const configGrid = document.getElementById('config-grid');
   const configStatus = document.getElementById('config-status');
+  const globalConfigCheckbox = document.getElementById('global-config-checkbox');
+  const sessionList = document.getElementById('session-list');
+  const newSessionBtn = document.getElementById('new-session-btn');
+  const newSessionForm = document.getElementById('new-session-form');
+  const newSessionName = document.getElementById('new-session-name');
+  const newSessionProject = document.getElementById('new-session-project');
+  const cancelSessionBtn = document.getElementById('cancel-session-btn');
 
   let userScrolledUp = false;
   let ws = null;
+  let wsSessionId = null;
   let latestAgents = {};
-
-  // ---- Marked + Highlight setup ----
+  let latestGlobalAgents = {};
+  let sessions = [];
+  let activeSessionId = null;
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -40,7 +49,14 @@
     breaks: true,
   });
 
-  // ---- Scroll tracking ----
+  function sessionApi(path) {
+    if (!activeSessionId) throw new Error('no active session');
+    return `/api/sessions/${encodeURIComponent(activeSessionId)}${path}`;
+  }
+
+  function activeSession() {
+    return sessions.find((s) => s.id === activeSessionId) || null;
+  }
 
   chatArea.addEventListener('scroll', () => {
     const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 60;
@@ -63,8 +79,6 @@
       newMsgsBtn.classList.remove('hidden');
     }
   }
-
-  // ---- Render ----
 
   function parseChatMD(text) {
     const turns = [];
@@ -113,7 +127,6 @@
 
       const body = document.createElement('div');
       body.className = 'turn-body';
-
       if (turn.body.trim()) {
         body.innerHTML = marked.parse(turn.body.trim());
       }
@@ -125,26 +138,124 @@
     scrollToBottom();
   }
 
-  // ---- API calls ----
+  function projectShortName(projectRoot) {
+    if (!projectRoot) return '';
+    const parts = projectRoot.replaceAll('\\', '/').split('/').filter(Boolean);
+    return parts[parts.length - 1] || projectRoot;
+  }
+
+  function renderSessions() {
+    sessionList.innerHTML = '';
+    for (const session of sessions) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'session-item' + (session.id === activeSessionId ? ' active' : '');
+      item.dataset.sessionId = session.id;
+
+      const text = document.createElement('span');
+      text.className = 'session-text';
+      const name = document.createElement('span');
+      name.className = 'session-name';
+      name.textContent = session.name || session.id;
+      const project = document.createElement('span');
+      project.className = 'session-project';
+      project.textContent = projectShortName(session.project_root);
+      project.title = session.project_root || '';
+      text.appendChild(name);
+      text.appendChild(project);
+
+      const del = document.createElement('span');
+      del.className = 'session-delete';
+      del.textContent = 'x';
+      del.title = 'Delete session';
+      del.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteSession(session.id);
+      });
+
+      item.appendChild(text);
+      item.appendChild(del);
+      item.addEventListener('click', () => switchSession(session.id));
+      sessionList.appendChild(item);
+    }
+  }
+
+  async function loadSessions() {
+    const res = await fetch('/api/sessions');
+    const data = await res.json();
+    sessions = data.sessions || [];
+    activeSessionId = data.active_session_id || (sessions[0] && sessions[0].id) || null;
+    renderSessions();
+    return activeSessionId;
+  }
+
+  async function switchSession(sessionId) {
+    if (!sessionId || sessionId === activeSessionId) return;
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
+    activeSessionId = sessionId;
+    userScrolledUp = false;
+    renderSessions();
+    connectWS();
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+  }
+
+  async function createSession(name, projectRoot) {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, project_root: projectRoot }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      configStatus.textContent = err.error || 'session create failed';
+      return;
+    }
+    const data = await res.json();
+    await loadSessions();
+    activeSessionId = data.active_session_id;
+    renderSessions();
+    connectWS();
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+  }
+
+  async function deleteSession(sessionId) {
+    const session = sessions.find((s) => s.id === sessionId);
+    const label = session ? session.name : sessionId;
+    if (!window.confirm(`Delete session "${label}"?`)) return;
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json();
+      window.alert(err.error || 'delete failed');
+      return;
+    }
+    const data = await res.json();
+    sessions = data.sessions || [];
+    activeSessionId = data.active_session_id || (sessions[0] && sessions[0].id) || null;
+    renderSessions();
+    connectWS();
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+  }
 
   async function fetchChat() {
+    if (!activeSessionId) return;
     try {
-      const res = await fetch('/api/chat');
+      const res = await fetch(sessionApi('/chat'));
       const data = await res.json();
-      const turns = parseChatMD(data.text);
-      renderTurns(turns);
+      renderTurns(parseChatMD(data.text || ''));
     } catch (e) {
       console.error('Failed to fetch chat:', e);
     }
   }
 
   async function sendMessage() {
+    if (!activeSessionId) return;
     const text = msgInput.value.trim();
     if (!text) return;
 
     msgInput.value = '';
     try {
-      const res = await fetch('/api/send', {
+      const res = await fetch(sessionApi('/send'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
@@ -159,33 +270,38 @@
   }
 
   async function compactChat() {
+    if (!activeSessionId) return;
     try {
-      await fetch('/api/compact', { method: 'POST' });
+      await fetch(sessionApi('/compact'), { method: 'POST' });
     } catch (e) {
       console.error('Compact failed:', e);
     }
   }
 
   async function cancelDispatch() {
+    if (!activeSessionId) return;
     try {
-      await fetch('/api/cancel', { method: 'POST' });
+      await fetch(sessionApi('/cancel'), { method: 'POST' });
     } catch (e) {
       console.error('Cancel failed:', e);
     }
   }
 
   async function fetchStatus() {
+    if (!activeSessionId) return;
     try {
-      const res = await fetch('/api/status');
+      const res = await fetch(sessionApi('/status'));
       const data = await res.json();
       updateStatus(data);
     } catch (_) {}
   }
 
   async function patchConfig(changes) {
+    if (!activeSessionId && !globalConfigCheckbox.checked) return;
     configStatus.textContent = 'saving...';
+    const url = globalConfigCheckbox.checked ? '/api/config' : sessionApi('/config');
     try {
-      const res = await fetch('/api/config', {
+      const res = await fetch(url, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(changes),
@@ -195,12 +311,7 @@
         configStatus.textContent = err.error || 'save failed';
         return;
       }
-      const data = await res.json();
-      if (data.agents) {
-        latestAgents = data.agents;
-        renderAgentModels(latestAgents);
-        renderConfig(latestAgents);
-      }
+      await fetchStatus();
       configStatus.textContent = 'saved';
       setTimeout(() => {
         if (configStatus.textContent === 'saved') configStatus.textContent = '';
@@ -211,8 +322,9 @@
   }
 
   async function fetchTrace() {
+    if (!activeSessionId) return;
     try {
-      const res = await fetch('/api/trace');
+      const res = await fetch(sessionApi('/trace'));
       const data = await res.json();
       renderTrace(data.events || []);
     } catch (_) {}
@@ -254,17 +366,23 @@
     traceList.scrollTop = traceList.scrollHeight;
   }
 
-  // ---- WebSocket ----
-
   function connectWS() {
+    if (!activeSessionId) return;
+    if (ws) {
+      ws.onclose = null;
+      ws.close();
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${protocol}://${window.location.host}/ws`;
+    const targetSessionId = activeSessionId;
+    const url = `${protocol}://${window.location.host}/ws/${encodeURIComponent(targetSessionId)}`;
 
+    wsSessionId = targetSessionId;
     ws = new WebSocket(url);
 
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        if (msg.session_id && msg.session_id !== activeSessionId) return;
         if (msg.type === 'chat_update') {
           fetchChat();
         } else if (msg.type === 'status') {
@@ -278,7 +396,9 @@
     };
 
     ws.onclose = () => {
-      setTimeout(connectWS, 2000);
+      if (wsSessionId === activeSessionId) {
+        setTimeout(connectWS, 2000);
+      }
     };
 
     ws.onerror = () => {
@@ -286,13 +406,17 @@
     };
   }
 
-  // ---- Status ----
-
   function updateStatus(data) {
-    projectNameEl.textContent = data.project || '';
+    const session = data.session || activeSession();
+    if (session) {
+      projectNameEl.textContent = `${session.name || session.id} - ${projectShortName(session.project_root)}`;
+    } else {
+      projectNameEl.textContent = data.project || '';
+    }
     latestAgents = data.agents || {};
+    latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
     renderAgentModels(latestAgents);
-    renderConfig(latestAgents);
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
 
     if (data.busy) {
       statusIndicator.className = 'busy';
@@ -313,7 +437,7 @@
       if (!info) continue;
       const pill = document.createElement('span');
       pill.className = `agent-model ${id}`;
-      pill.title = `${info.runtime || ''} — ${info.note || ''}`.trim();
+      pill.title = `${info.runtime || ''} - ${info.note || ''}`.trim();
       const effort = info.effort ? ` / ${info.effort}` : '';
       pill.textContent = `@${id}: ${info.model || info.runtime || 'default'}${effort}`;
       agentModelsEl.appendChild(pill);
@@ -391,8 +515,6 @@
     }
   }
 
-  // ---- @ Autocomplete ----
-
   const acBox = document.createElement('div');
   acBox.id = 'autocomplete-box';
   acBox.className = 'hidden';
@@ -400,9 +522,9 @@
 
   let acState = {
     open: false,
-    items: [],          // [{label, insert, kind}]
+    items: [],
     selectedIdx: 0,
-    triggerStart: -1,   // index of '@' in textarea value
+    triggerStart: -1,
     query: '',
   };
 
@@ -453,15 +575,16 @@
   }
 
   async function fetchCompletions(query) {
+    if (!activeSessionId) return { agents: [], files: [] };
     try {
-      const res = await fetch('/api/completions?q=' + encodeURIComponent(query));
+      const res = await fetch(sessionApi('/completions') + '?q=' + encodeURIComponent(query));
       return await res.json();
     } catch (_) {
       return { agents: [], files: [] };
     }
   }
 
-  function buildItems(data, query) {
+  function buildItems(data) {
     const items = [];
     for (const a of (data.agents || [])) {
       items.push({ label: a, insert: a, kind: 'agent' });
@@ -475,7 +598,7 @@
   async function refreshAC() {
     if (!acState.open) return;
     const data = await fetchCompletions(acState.query);
-    acState.items = buildItems(data, acState.query);
+    acState.items = buildItems(data);
     if (acState.selectedIdx >= acState.items.length) {
       acState.selectedIdx = 0;
     }
@@ -505,13 +628,11 @@
   function updateACFromInput() {
     const val = msgInput.value;
     const caret = msgInput.selectionStart;
-    // Walk back from caret to find an '@' that isn't followed by whitespace.
     let i = caret - 1;
     let trigger = -1;
     while (i >= 0) {
       const ch = val[i];
       if (ch === '@') {
-        // must be at start-of-string or preceded by whitespace
         if (i === 0 || /\s/.test(val[i - 1])) {
           trigger = i;
         }
@@ -543,11 +664,8 @@
     }
   });
   msgInput.addEventListener('blur', () => {
-    // delay so mousedown on row can fire first
     setTimeout(closeAC, 150);
   });
-
-  // ---- Input events ----
 
   msgInput.addEventListener('keydown', (e) => {
     if (acState.open && acState.items.length > 0) {
@@ -585,7 +703,10 @@
   cancelBtn.addEventListener('click', cancelDispatch);
   configToggleBtn.addEventListener('click', () => {
     configPanel.classList.toggle('hidden');
-    renderConfig(latestAgents);
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
+  });
+  globalConfigCheckbox.addEventListener('change', () => {
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
   });
   agentButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -597,10 +718,28 @@
     });
   });
 
-  // ---- Init ----
+  newSessionBtn.addEventListener('click', () => {
+    const current = activeSession();
+    newSessionProject.value = current ? current.project_root : '';
+    newSessionName.value = '';
+    newSessionForm.classList.remove('hidden');
+    newSessionName.focus();
+  });
+  cancelSessionBtn.addEventListener('click', () => {
+    newSessionForm.classList.add('hidden');
+  });
+  newSessionForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await createSession(newSessionName.value.trim() || 'untitled', newSessionProject.value.trim());
+    newSessionForm.classList.add('hidden');
+  });
 
-  fetchChat();
-  fetchStatus();
-  fetchTrace();
-  connectWS();
+  async function init() {
+    await loadSessions();
+    renderSessions();
+    connectWS();
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+  }
+
+  init();
 })();

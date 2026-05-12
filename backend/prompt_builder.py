@@ -1,7 +1,7 @@
 """Prompt builder: assembles the full prompt for each dispatch."""
 
 from pathlib import Path
-from .project import read_claude_md
+from .project import read_project_rules
 
 
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
@@ -20,9 +20,9 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "ask a concise question and stop.\n"
     )
 
-    claude_md = read_claude_md(project_root)
+    project_rules = read_project_rules(project_root)
     clauses.append(
-        "=== PROJECT RULES (from CLAUDE.md) ===\n" + claude_md
+        "=== PROJECT RULES (from AGENTS.md or CLAUDE.md) ===\n" + project_rules
     )
 
     clauses.append(

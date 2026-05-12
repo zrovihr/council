@@ -1,7 +1,9 @@
-"""Summarizer: compact chat.md via Deepseek Flash."""
+"""Summarizer: compact a session chat.md via Deepseek Flash."""
 
 import asyncio
+import json
 import logging
+import secrets
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -12,20 +14,24 @@ from .dispatcher import (
     _strip_opencode_header,
 )
 from .mentions import find_tail_mention
+from .state import Session
 
 logger = logging.getLogger(__name__)
 
 
-async def compact_chat(chat_path: Path, archive_dir: Path, config: dict) -> None:
+async def compact_chat(session: Session, config: dict) -> None:
+    chat_path = session.chat_path
     if not chat_path.exists():
         return
 
     full_text = chat_path.read_text(encoding="utf-8", errors="replace")
+    covered_lines = [0, len(full_text.splitlines())]
 
     pending_mention = find_tail_mention(full_text)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     archive_name = f"chat-{timestamp}.md"
+    archive_dir = session.archive_dir
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / archive_name
 
@@ -44,6 +50,21 @@ async def compact_chat(chat_path: Path, archive_dir: Path, config: dict) -> None
         new_content += f"\n## [@system] compacted {timestamp}\nChat compacted. No pending mentions.\n\n---\n"
 
     chat_path.write_text(new_content, encoding="utf-8")
+    compaction_id = f"c_{secrets.token_hex(4)}"
+    record = {
+        "id": compaction_id,
+        "covered_lines": covered_lines,
+        "summary": summary,
+        "summary_path": f"chat-archive/{archive_name}",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(session.compactions_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=True) + "\n")
+    session.append_event({
+        "kind": "compaction",
+        "compaction_id": compaction_id,
+        "covered_range": covered_lines,
+    })
 
 
 async def _summarize(full_text: str, config: dict) -> str:

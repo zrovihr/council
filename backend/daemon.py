@@ -1,4 +1,4 @@
-"""Daemon: watches chat.md for @mentions and dispatches agents."""
+"""Daemon: watches each session chat.md for @mentions and dispatches agents."""
 
 import asyncio
 import re
@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .state import AppState
+from .state import Session, SessionRegistry
 from .prompt_builder import build_prompt
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
                             DispatchResult)
@@ -73,32 +73,6 @@ def _read_latest_turn_header(chat_path: Path) -> str:
     return turns[-1]["header"] if turns else ""
 
 
-def _append_turn(chat_path: Path, author: str, body: str, metadata: dict | None = None):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    turn = f"\n## [@{author}] {timestamp}\n{body}\n\n---\n"
-    with open(chat_path, "a", encoding="utf-8") as f:
-        f.write(turn)
-
-
-def _append_error(chat_path: Path, agent: str, reason: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    safe_reason = neutralize_agent_mentions(reason).strip()
-    turn = (
-        f"\n## [@system] {timestamp}\n"
-        f"error: agent {agent} dispatch failed: {safe_reason}\n\n---\n"
-    )
-    with open(chat_path, "a", encoding="utf-8") as f:
-        f.write(turn)
-
-
-def _append_system(chat_path: Path, body: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    safe_body = neutralize_agent_mentions(body).strip()
-    turn = f"\n## [@system] {timestamp}\n{safe_body}\n\n---\n"
-    with open(chat_path, "a", encoding="utf-8") as f:
-        f.write(turn)
-
-
 def _agent_timeout(config: dict, agent: str) -> int:
     dispatch = config.get("dispatch", {})
     default_timeout = dispatch.get("timeout_seconds", 300)
@@ -122,11 +96,8 @@ def _format_usage(usage: dict[str, int]) -> str:
     return " ".join(parts) if parts else "tokens=unavailable"
 
 
-async def daemon_loop(state: AppState):
-    chat_path = state.chat_path
-    config = state.config
-    max_chars = config["dispatch"]["max_prompt_chars"]
-    auto_threshold = config["compact"]["auto_threshold_lines"]
+async def session_daemon_loop(session: Session, registry: SessionRegistry):
+    chat_path = session.chat_path
 
     last_processed_header = _read_latest_turn_header(chat_path)
     pending_mentions: asyncio.Queue[str] = asyncio.Queue()
@@ -170,11 +141,14 @@ async def daemon_loop(state: AppState):
         nonlocal last_processed_header
         while True:
             mention = await pending_mentions.get()
-            await state.set_busy(mention)
+            config = session.effective_config()
+            max_chars = config["dispatch"]["max_prompt_chars"]
+            auto_threshold = config["compact"]["auto_threshold_lines"]
+            await session.set_busy(mention)
             try:
                 role = _get_role(config, mention)
                 prompt = build_prompt(
-                    mention, state.project_root, chat_path, max_chars, role=role
+                    mention, session.project_root, chat_path, max_chars, role=role
                 )
                 binary = _get_binary(config, mention)
                 model = _get_model(config, mention)
@@ -190,7 +164,7 @@ async def daemon_loop(state: AppState):
                     runtime = f"{binary} CLI (model={model or 'CLI default'})"
                     command_hint = (
                         f"{binary} --dangerously-skip-permissions "
-                        f"--add-dir {state.config.get('council_root', 'Council')} -p"
+                        f"--add-dir {registry.council_root} -p"
                     )
                 else:
                     runtime = f"{binary} exec (model={model or 'CLI default'})"
@@ -198,18 +172,18 @@ async def daemon_loop(state: AppState):
                         f"{binary} exec --dangerously-bypass-approvals-and-sandbox "
                         "--output-last-message <file> -"
                     )
-                await state.add_trace(
+                await session.add_trace(
                     mention,
                     "dispatch started",
                     f"runtime={runtime} command={command_hint} "
                     f"timeout={_format_timeout(_agent_timeout(config, mention))} "
                     f"prompt_chars={len(prompt)} "
                     f"role_chars={len(role)} "
-                    f"cwd={state.project_root}",
+                    f"cwd={session.project_root}",
                 )
 
                 async def trace_agent_output(source: str, text: str):
-                    await state.add_trace(
+                    await session.add_trace(
                         mention,
                         f"{source}",
                         text[:2000],
@@ -218,28 +192,28 @@ async def daemon_loop(state: AppState):
                 async def run_dispatch() -> DispatchResult:
                     if mention == "claude":
                         return await dispatch_claude(
-                            prompt, state.project_root,
+                            prompt, session.project_root,
                             _agent_timeout(config, mention),
                             binary=binary, model=model, effort=effort,
                             on_output=trace_agent_output,
                         )
                     if mention == "codex":
                         return await dispatch_codex(
-                            prompt, state.project_root,
+                            prompt, session.project_root,
                             _agent_timeout(config, mention),
                             binary=binary, model=model, effort=effort,
                             on_output=trace_agent_output,
                         )
                     if mention == "deepseek":
                         async def trace_opencode_output(source: str, text: str):
-                            await state.add_trace(
+                            await session.add_trace(
                                 "deepseek",
                                 f"opencode {source}",
                                 text[:2000],
                             )
 
                         return await dispatch_deepseek(
-                            prompt, state.project_root,
+                            prompt, session.project_root,
                             _agent_timeout(config, mention),
                             model=_get_model_deepseek(config),
                             on_output=trace_opencode_output,
@@ -247,44 +221,51 @@ async def daemon_loop(state: AppState):
                     raise ValueError(f"Unknown agent: {mention}")
 
                 dispatch_task = asyncio.create_task(run_dispatch())
-                await state.set_dispatch_task(dispatch_task)
+                await session.set_dispatch_task(dispatch_task)
                 try:
                     result = await dispatch_task
                 finally:
-                    await state.set_dispatch_task(None)
+                    await session.set_dispatch_task(None)
 
                 response = result.text
-                await state.add_trace(
+                await session.add_trace(
                     mention,
                     "dispatch completed",
                     f"response_chars={len(response)} "
                     f"{_format_usage(result.usage)}",
                 )
-                _append_turn(chat_path, mention, response,
-                             metadata={"tokens": result.usage})
-                await state.notify_chat_update()
+                session.append_turn(mention, response, usage=result.usage)
+                await session.notify_chat_update()
 
                 if chat_path.exists():
                     text = chat_path.read_text(encoding="utf-8", errors="replace")
                     line_count = text.count("\n") + 1
                     if line_count > auto_threshold:
-                        await compact_chat(chat_path, state.archive_dir, config)
-                        await state.notify_chat_update()
+                        await compact_chat(session, config)
+                        await session.notify_chat_update()
                         last_processed_header = ""
 
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
-                await state.add_trace(mention, "dispatch cancelled", "Stopped by user.")
-                _append_system(chat_path, f"agent {mention} dispatch cancelled by user.")
-                await state.notify_chat_update()
+                await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
+                safe_body = neutralize_agent_mentions(
+                    f"agent {mention} dispatch cancelled by user."
+                )
+                session.append_turn("system", safe_body, kind="system_turn")
+                await session.notify_chat_update()
             except Exception as e:
                 logger.exception("Dispatch error")
-                await state.add_trace(mention, "dispatch failed", str(e))
-                _append_error(chat_path, mention, str(e))
-                await state.notify_chat_update()
+                await session.add_trace(mention, "dispatch failed", str(e))
+                safe_reason = neutralize_agent_mentions(str(e)).strip()
+                session.append_turn(
+                    "system",
+                    f"error: agent {mention} dispatch failed: {safe_reason}",
+                    kind="system_turn",
+                )
+                await session.notify_chat_update()
             finally:
-                await state.set_idle()
+                await session.set_idle()
                 queued_mentions.discard(mention)
                 pending_mentions.task_done()
 
