@@ -109,6 +109,10 @@ def _timeout_enabled(timeout: int | float | None) -> bool:
     return timeout is not None and timeout > 0
 
 
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
 def _parse_int(value: str) -> int:
     return int(value.replace(",", ""))
 
@@ -433,7 +437,11 @@ async def dispatch_codex(prompt: str, project_root: Path,
 async def dispatch_deepseek(prompt: str, project_root: Path,
                             timeout: int = 300,
                             model: str = "deepseek/deepseek-v4-pro",
+                            effort: str = "",
                             on_output: Callable[[str, str], Awaitable[None]] | None = None) -> DispatchResult:
+    # TODO: deepseek reasoning effort is not yet passed to opencode CLI.
+    # opencode may support effort via model suffix or env; investigate.
+    _ = effort
     stdout = await _run_opencode_with_prompt_file(
         prompt,
         project_root,

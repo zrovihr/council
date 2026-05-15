@@ -1,7 +1,11 @@
 """FastAPI app: multi-session routes, websocket, and static file serving."""
 
 import asyncio
+import json
 import logging
+import os
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,7 +13,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.websockets import WebSocketState
 
-from .state import Session, SessionRegistry, build_agent_info
+from .state import Session, SessionRegistry, build_agent_info, rebuild_chat_from_events
 from .daemon import session_daemon_loop
 from .summarizer import compact_chat
 from .completions import list_agents, list_project_files
@@ -85,6 +89,14 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     async def get_style_css():
         return FileResponse(FRONTEND_DIR / "style.css", media_type="text/css")
 
+    @app.get("/icons/{name}")
+    async def get_icon(name: str):
+        icon_path = FRONTEND_DIR / "icons" / name
+        if not icon_path.is_file():
+            raise HTTPException(status_code=404)
+        mt = "image/png"
+        return FileResponse(icon_path, media_type=mt)
+
     @app.get("/api/sessions")
     async def get_sessions():
         return {
@@ -128,6 +140,16 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "active_session_id": registry.active_session_id,
         }
 
+    @app.patch("/api/sessions/{session_id}")
+    async def patch_session_rename(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        new_name = str(body.get("name") or "").strip()
+        if not new_name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        session.rename(new_name)
+        await session.broadcast_status()
+        return {"ok": True, "session": session.metadata()}
+
     @app.get("/api/sessions/{session_id}/chat")
     async def get_chat(session_id: str):
         session = _get_session(registry, session_id)
@@ -148,7 +170,52 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/compact")
     async def post_compact(session_id: str):
         session = _get_session(registry, session_id)
-        await compact_chat(session, session.effective_config())
+        await session.set_busy("summarizer")
+        try:
+            await compact_chat(session, session.effective_config())
+        finally:
+            await session.set_idle()
+        await session.notify_chat_update()
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/erase")
+    async def post_erase(session_id: str):
+        session = _get_session(registry, session_id)
+        session.chat_path.write_text("", encoding="utf-8")
+        session.events_path.write_text("", encoding="utf-8")
+        session.trace_events.clear()
+        await session.add_trace("system", "chat erased")
+        await session.notify_chat_update()
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/erase_turn")
+    async def post_erase_turn(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        turn_index = body.get("index")
+        if not isinstance(turn_index, int) or turn_index < 0:
+            return JSONResponse({"error": "invalid turn index"}, status_code=400)
+        lines = session.events_path.read_text(encoding="utf-8").splitlines()
+        turn_kinds = {"user_turn", "agent_turn", "system_turn"}
+        turn_count = -1
+        target_idx = None
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("kind") in turn_kinds:
+                turn_count += 1
+                if turn_count == turn_index:
+                    target_idx = i
+                    break
+        if target_idx is None:
+            return JSONResponse({"error": "turn not found"}, status_code=404)
+        del lines[target_idx]
+        session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        rebuild_chat_from_events(session.events_path, session.chat_path)
+        await session.add_trace("system", f"turn {turn_index} erased")
         await session.notify_chat_update()
         return {"ok": True}
 
@@ -158,6 +225,56 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         cancelled = await session.cancel_current_dispatch()
         if not cancelled:
             return JSONResponse({"error": "no active dispatch"}, status_code=409)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/restart")
+    async def post_restart(session_id: str):
+        session = _get_session(registry, session_id)
+        await session.add_trace("system", "restart requested")
+
+        async def _delayed_exit():
+            await asyncio.sleep(0.5)
+            os._exit(42)
+
+        asyncio.create_task(_delayed_exit())
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/open-file")
+    async def post_open_file(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        rel_path = str(body.get("path") or "").strip()
+        if not rel_path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        full_path = (session.project_root / rel_path).resolve()
+        if not str(full_path).startswith(str(session.project_root.resolve())):
+            return JSONResponse({"error": "path traversal denied"}, status_code=403)
+        if not full_path.is_file():
+            return JSONResponse({"error": "file not found"}, status_code=404)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(full_path))
+            else:
+                subprocess.Popen(["open", str(full_path)])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/open-explorer")
+    async def post_open_explorer(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        rel_path = str(body.get("path") or "").strip()
+        if not rel_path:
+            return JSONResponse({"error": "path is required"}, status_code=400)
+        full_path = (session.project_root / rel_path).resolve()
+        if not str(full_path).startswith(str(session.project_root.resolve())):
+            return JSONResponse({"error": "path traversal denied"}, status_code=403)
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", f"/select,{str(full_path)}"])
+            else:
+                subprocess.Popen(["open", "-R", str(full_path)])
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
         return {"ok": True}
 
     @app.patch("/api/sessions/{session_id}/config")

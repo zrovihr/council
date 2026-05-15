@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import shutil
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek")
 STATE_SECTIONS = ("models", "effort", "roles")
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def utc_now() -> str:
@@ -169,6 +171,47 @@ def rebuild_chat_from_events(events_path: Path, chat_path: Path) -> None:
     chat_path.write_text("".join(parts), encoding="utf-8")
 
 
+def _trace_time(event: dict) -> str:
+    ts = str(event.get("ts") or "")
+    if not ts:
+        return ""
+    try:
+        return datetime.fromisoformat(ts).strftime("%H:%M:%S")
+    except ValueError:
+        return ts[-8:] if len(ts) >= 8 else ts
+
+
+def clean_trace_text(text: str) -> str:
+    cleaned = ANSI_RE.sub("", str(text or ""))
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(
+        ch for ch in cleaned
+        if ch == "\n" or ch == "\t" or ord(ch) >= 32
+    )
+
+
+def load_trace_from_events(events_path: Path, limit: int = 100) -> list[dict]:
+    if not events_path.exists():
+        return []
+    trace_events: list[dict] = []
+    for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") != "trace":
+            continue
+        trace_events.append({
+            "time": _trace_time(event),
+            "agent": event.get("agent") or "system",
+            "message": clean_trace_text(event.get("message") or ""),
+            "detail": clean_trace_text(event.get("detail") or ""),
+        })
+    return trace_events[-limit:]
+
+
 @dataclass
 class Session:
     id: str
@@ -210,7 +253,16 @@ class Session:
     def ensure_files(self) -> None:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
+        for agent in AGENTS:
+            (self.session_dir / "agent-memory" / agent / "artifacts").mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            (self.session_dir / "agent-memory" / agent / "runs.jsonl").touch(
+                exist_ok=True
+            )
         self.events_path.touch(exist_ok=True)
+        self.trace_events = load_trace_from_events(self.events_path)
         if not self.state_path.exists():
             self.save_state()
         if not self.meta_path.exists():
@@ -235,6 +287,10 @@ class Session:
             encoding="utf-8",
         )
 
+    def rename(self, new_name: str) -> None:
+        self.name = new_name.strip() or self.name
+        self.save_meta()
+
     def touch(self) -> None:
         self.last_used_at = utc_now()
         self.save_meta()
@@ -250,11 +306,12 @@ class Session:
         text: str,
         kind: str | None = None,
         usage: dict[str, int] | None = None,
+        metadata: dict | None = None,
     ) -> None:
         display_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         body = text.rstrip()
         event_kind = kind or ("user_turn" if author == "you" else "agent_turn")
-        event = {
+        event: dict = {
             "kind": event_kind,
             "author": author,
             "text": body,
@@ -266,6 +323,8 @@ class Session:
             if "completion_tokens" in usage:
                 event["response_tokens_est"] = usage["completion_tokens"]
             event["token_usage"] = usage
+        if metadata:
+            event["metadata"] = metadata
         self.append_event(event)
         with open(self.chat_path, "a", encoding="utf-8") as f:
             f.write(render_turn(author, body, display_ts))
@@ -311,16 +370,16 @@ class Session:
         event = {
             "time": datetime.now().strftime("%H:%M:%S"),
             "agent": agent,
-            "message": message,
-            "detail": detail,
+            "message": clean_trace_text(message),
+            "detail": clean_trace_text(detail),
         }
         self.trace_events.append(event)
         self.trace_events = self.trace_events[-100:]
         self.append_event({
             "kind": "trace",
             "agent": agent,
-            "message": message,
-            "detail": detail,
+            "message": event["message"],
+            "detail": event["detail"],
         })
         await self.broadcast({"type": "trace_update", "session_id": self.id, "event": event})
 

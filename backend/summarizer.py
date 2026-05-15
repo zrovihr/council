@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import shutil
 from datetime import datetime
@@ -17,6 +18,11 @@ from .mentions import find_tail_mention
 from .state import Session
 
 logger = logging.getLogger(__name__)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+OPENCODE_DONE_RE = re.compile(
+    r"^Done\..*Written to.*council-prompt-.*\.md(?:\.compacted)?\.?$"
+)
+OPENCODE_ECHO_RE = re.compile(r"^Read the attached (?:prompt file|transcript) and.*\.$")
 
 
 async def compact_chat(session: Session, config: dict) -> None:
@@ -37,17 +43,19 @@ async def compact_chat(session: Session, config: dict) -> None:
 
     shutil.move(str(chat_path), str(archive_path))
 
-    summary = await _summarize(full_text, config)
+    summary = _clean_summary(await _summarize(full_text, config))
 
-    new_content = f"<!-- COMPACTED {timestamp} → see chat-archive/{archive_name} -->\n{summary}\n"
+    archive_note = f"Compacted previous chat. Archive: `chat-archive/{archive_name}`"
+    new_content = (
+        f"## [@system] compacted {timestamp}\n"
+        f"{archive_note}\n\n"
+        f"{summary}\n\n"
+    )
 
     if pending_mention:
-        new_content += (
-            f"\n## [@system] compacted {timestamp}\n"
-            f"Pending mention: @{pending_mention}\n\n---\n"
-        )
+        new_content += f"Pending mention: @{pending_mention}\n\n---\n"
     else:
-        new_content += f"\n## [@system] compacted {timestamp}\nChat compacted. No pending mentions.\n\n---\n"
+        new_content += "No pending mentions.\n\n---\n"
 
     chat_path.write_text(new_content, encoding="utf-8")
     compaction_id = f"c_{secrets.token_hex(4)}"
@@ -65,6 +73,17 @@ async def compact_chat(session: Session, config: dict) -> None:
         "compaction_id": compaction_id,
         "covered_range": covered_lines,
     })
+
+
+def _clean_summary(summary: str) -> str:
+    cleaned = HTML_COMMENT_RE.sub("", summary or "")
+    lines = [
+        line for line in cleaned.splitlines()
+        if line.strip() != "---"
+        and not OPENCODE_DONE_RE.match(line.strip())
+        and not OPENCODE_ECHO_RE.match(line.strip())
+    ]
+    return "\n".join(lines).strip() or "No summary returned."
 
 
 async def _summarize(full_text: str, config: dict) -> str:

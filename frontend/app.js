@@ -8,8 +8,14 @@
   const sendBtn = document.getElementById('send-btn');
   const agentButtons = document.querySelectorAll('.agent-btn');
   const compactBtn = document.getElementById('compact-btn');
+  const eraseBtn = document.getElementById('erase-btn');
   const cancelBtn = document.getElementById('cancel-btn');
   const newMsgsBtn = document.getElementById('new-msgs-btn');
+  const confirmOverlay = document.getElementById('confirm-overlay');
+  const confirmTitle = document.getElementById('confirm-title');
+  const confirmMsg = document.getElementById('confirm-msg');
+  const confirmYesBtn = document.getElementById('confirm-yes-btn');
+  const confirmNoBtn = document.getElementById('confirm-no-btn');
   const statusIndicator = document.getElementById('status-indicator');
   const projectNameEl = document.getElementById('project-name');
   const agentModelsEl = document.getElementById('agent-models');
@@ -26,6 +32,7 @@
   const cancelSessionBtn = document.getElementById('cancel-session-btn');
 
   let userScrolledUp = false;
+  let isRenderingChat = false;
   let ws = null;
   let wsSessionId = null;
   let latestAgents = {};
@@ -59,6 +66,7 @@
   }
 
   chatArea.addEventListener('scroll', () => {
+    if (isRenderingChat) return;
     const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 60;
     userScrolledUp = !atBottom;
     if (atBottom) {
@@ -85,10 +93,15 @@
     const TURN_HEADER_RE = /^##\s+\[@(\w+)\]\s+(.+)$/;
     const lines = text.split('\n');
     let current = null;
+    let preamble = '';
 
     for (const line of lines) {
       const m = TURN_HEADER_RE.exec(line);
       if (m) {
+        if (!current && turns.length === 0 && preamble.trim()) {
+          turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
+          preamble = '';
+        }
         if (current) turns.push(current);
         current = { author: m[1], time: m[2], body: '' };
       } else if (current) {
@@ -99,20 +112,41 @@
           if (current.body) current.body += '\n';
           current.body += line;
         }
+      } else {
+        if (preamble) preamble += '\n';
+        preamble += line;
       }
     }
     if (current) turns.push(current);
+    if (turns.length === 0 && preamble.trim()) {
+      turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
+    }
     return turns;
   }
 
   function renderTurns(turns) {
+    const previousScrollHeight = chatArea.scrollHeight;
+    const previousScrollTop = chatArea.scrollTop;
+    const previousDistanceFromBottom = previousScrollHeight - previousScrollTop - chatArea.clientHeight;
+    const wasAtBottom = previousDistanceFromBottom < 60;
+    isRenderingChat = true;
+
     chatInner.innerHTML = '';
-    for (const turn of turns) {
+    turns.forEach((turn, turnIdx) => {
       const card = document.createElement('div');
       card.className = 'turn-card';
 
       const header = document.createElement('div');
       header.className = 'turn-header';
+
+      const avatar = document.createElement(turn.author === 'claude' || turn.author === 'codex' || turn.author === 'deepseek' ? 'img' : 'span');
+      avatar.className = `turn-avatar ${turn.author}`;
+      if (avatar.tagName === 'IMG') {
+        avatar.src = `/icons/${turn.author}.png`;
+        avatar.alt = turn.author;
+      } else {
+        avatar.textContent = turn.author === 'you' ? 'Y' : turn.author[0].toUpperCase();
+      }
 
       const authorSpan = document.createElement('span');
       authorSpan.className = `turn-author ${turn.author}`;
@@ -122,20 +156,166 @@
       timeSpan.className = 'turn-time';
       timeSpan.textContent = turn.time;
 
+      const eraseBtn = document.createElement('button');
+      eraseBtn.className = 'turn-erase-btn';
+      eraseBtn.textContent = '\u00D7';
+      eraseBtn.title = 'Erase this message';
+      eraseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        eraseTurn(turnIdx);
+      });
+
+      header.appendChild(avatar);
       header.appendChild(authorSpan);
       header.appendChild(timeSpan);
+      header.appendChild(eraseBtn);
 
       const body = document.createElement('div');
       body.className = 'turn-body';
       if (turn.body.trim()) {
         body.innerHTML = marked.parse(turn.body.trim());
+        colorMentions(body);
+        linkFiles(body);
       }
 
       card.appendChild(header);
       card.appendChild(body);
       chatInner.appendChild(card);
+    });
+
+    if (wasAtBottom) {
+      userScrolledUp = false;
+      chatArea.scrollTop = chatArea.scrollHeight;
+      newMsgsBtn.classList.add('hidden');
+    } else {
+      userScrolledUp = true;
+      chatArea.scrollTop = Math.max(0, chatArea.scrollHeight - previousDistanceFromBottom - chatArea.clientHeight);
+      newMsgsBtn.classList.remove('hidden');
     }
-    scrollToBottom();
+
+    requestAnimationFrame(() => {
+      isRenderingChat = false;
+    });
+  }
+
+  function colorMentions(container) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    const mentionRE = /@(claude|codex|deepseek)\b/gi;
+    for (const node of textNodes) {
+      if (node.parentNode && node.parentNode.closest('pre, code, .mention')) continue;
+      const text = node.textContent;
+      if (!mentionRE.test(text)) continue;
+      mentionRE.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let lastIdx = 0;
+      let m;
+      while ((m = mentionRE.exec(text)) !== null) {
+        if (m.index > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+        const span = document.createElement('span');
+        span.className = `mention ${m[1].toLowerCase()}`;
+        span.textContent = m[0];
+        frag.appendChild(span);
+        lastIdx = mentionRE.lastIndex;
+      }
+      if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+
+  const FILE_PATH_RE = /(?:^|[\s(])((?:(?:[a-zA-Z]:[\\/]|\/|\.\.?[\\/])?[\w.\-\\/]+[\\/][\w.\-\\/]*\.[a-zA-Z]{1,8}))(?=[\s,;:.)'"\]>]|$)/g;
+
+  function linkFiles(container) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (const node of textNodes) {
+      const parent = node.parentNode;
+      if (!parent) continue;
+      if (parent.closest('pre, code, a, .file-link, .mention, .turn-erase-btn, button, input, textarea, select')) continue;
+      const text = node.textContent;
+      if (!/[\\/]/.test(text) || !/\.[a-zA-Z]{1,8}/.test(text)) continue;
+      FILE_PATH_RE.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let lastIdx = 0;
+      let m;
+      while ((m = FILE_PATH_RE.exec(text)) !== null) {
+        const fullMatch = m[0];
+        const pathStart = fullMatch.match(/^\s/) ? m.index + 1 : m.index;
+        const pathLen = fullMatch.trimStart().length;
+        if (pathStart > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, pathStart)));
+        const link = document.createElement('span');
+        link.className = 'file-link';
+        link.textContent = text.slice(pathStart, pathStart + pathLen);
+        link.title = 'Click to open';
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          showFileMenu(link, text.slice(pathStart, pathStart + pathLen), e);
+        });
+        frag.appendChild(link);
+        lastIdx = pathStart + pathLen;
+      }
+      if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+      if (frag.childNodes.length > 1 || (frag.firstChild && frag.firstChild !== node)) {
+        node.parentNode.replaceChild(frag, node);
+      }
+    }
+  }
+
+  let fileMenuEl = null;
+
+  function hideFileMenu() {
+    if (fileMenuEl) {
+      fileMenuEl.remove();
+      fileMenuEl = null;
+    }
+  }
+
+  function showFileMenu(anchor, filePath, event) {
+    hideFileMenu();
+    const menu = document.createElement('div');
+    menu.className = 'file-menu';
+    menu.innerHTML = `
+      <button class="file-menu-item" data-action="open">Open file</button>
+      <button class="file-menu-item" data-action="explorer">Open in explorer</button>
+    `;
+    menu.querySelector('[data-action="open"]').addEventListener('click', async () => {
+      hideFileMenu();
+      try {
+        await fetch(sessionApi('/open-file'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath }),
+        });
+      } catch (e) {
+        console.error('Open file failed:', e);
+      }
+    });
+    menu.querySelector('[data-action="explorer"]').addEventListener('click', async () => {
+      hideFileMenu();
+      try {
+        await fetch(sessionApi('/open-explorer'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath }),
+        });
+      } catch (e) {
+        console.error('Open explorer failed:', e);
+      }
+    });
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    menu.style.left = rect.left + 'px';
+    menu.style.top = (rect.bottom + 4) + 'px';
+    if (rect.bottom + menu.offsetHeight + 8 > window.innerHeight) {
+      menu.style.top = (rect.top - menu.offsetHeight - 4) + 'px';
+    }
+    fileMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('click', hideFileMenu, { once: true });
+    }, 0);
   }
 
   function projectShortName(projectRoot) {
@@ -157,6 +337,12 @@
       const name = document.createElement('span');
       name.className = 'session-name';
       name.textContent = session.name || session.id;
+      name.title = 'Double-click to rename';
+      name.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startRenameSession(session.id, name);
+      });
       const project = document.createElement('span');
       project.className = 'session-project';
       project.textContent = projectShortName(session.project_root);
@@ -179,6 +365,36 @@
       item.addEventListener('click', () => switchSession(session.id));
       sessionList.appendChild(item);
     }
+  }
+
+  function startRenameSession(sessionId, nameEl) {
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const currentName = session.name || session.id;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-rename-input';
+    input.value = currentName;
+    input.style.width = '100%';
+    input.style.boxSizing = 'border-box';
+    nameEl.replaceWith(input);
+    input.focus();
+    input.setSelectionRange(0, input.value.length);
+
+    const finish = async () => {
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        await renameSession(sessionId, newName);
+      } else {
+        input.replaceWith(nameEl);
+      }
+    };
+
+    input.addEventListener('blur', finish);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+    });
   }
 
   async function loadSessions() {
@@ -237,6 +453,24 @@
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
   }
 
+  async function renameSession(sessionId, newName) {
+    if (!newName || !newName.trim()) return;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (res.ok) {
+        await loadSessions();
+        renderSessions();
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error('Rename failed:', e);
+    }
+  }
+
   async function fetchChat() {
     if (!activeSessionId) return;
     try {
@@ -252,6 +486,16 @@
     if (!activeSessionId) return;
     const text = msgInput.value.trim();
     if (!text) return;
+
+    if (text.startsWith('/')) {
+      const cmdName = text.split(/\s+/)[0].slice(1).toLowerCase();
+      const cmdDef = COMMANDS.find(c => c.name === cmdName);
+      if (cmdDef) {
+        msgInput.value = '';
+        cmdDef.action();
+        return;
+      }
+    }
 
     msgInput.value = '';
     try {
@@ -269,13 +513,100 @@
     }
   }
 
+  function showConfirm(title, msg, onYes) {
+    confirmTitle.textContent = title;
+    confirmMsg.textContent = msg;
+    confirmYesBtn.onclick = async () => {
+      confirmOverlay.classList.add('hidden');
+      confirmYesBtn.onclick = null;
+      await onYes();
+    };
+    confirmNoBtn.onclick = () => {
+      confirmOverlay.classList.add('hidden');
+    };
+    confirmOverlay.classList.remove('hidden');
+    confirmNoBtn.focus();
+  }
+
   async function compactChat() {
     if (!activeSessionId) return;
-    try {
-      await fetch(sessionApi('/compact'), { method: 'POST' });
-    } catch (e) {
-      console.error('Compact failed:', e);
-    }
+    showConfirm(
+      'Compact chat?',
+      'This will summarize the chat log using Deepseek Flash. Older turns will be replaced with a summary. This cannot be undone.',
+      async () => {
+        try {
+          await fetch(sessionApi('/compact'), { method: 'POST' });
+        } catch (e) {
+          console.error('Compact failed:', e);
+        }
+      }
+    );
+  }
+
+  async function eraseChat() {
+    if (!activeSessionId) return;
+    showConfirm(
+      'Clear chat?',
+      'This will permanently delete all chat turns for this session. This cannot be undone.',
+      async () => {
+        try {
+          await fetch(sessionApi('/erase'), { method: 'POST' });
+          await fetchChat();
+        } catch (e) {
+          console.error('Clear failed:', e);
+        }
+      }
+    );
+  }
+
+  async function eraseTurn(turnIdx) {
+    if (!activeSessionId) return;
+    showConfirm(
+      'Erase message?',
+      'Delete this message permanently?',
+      async () => {
+        try {
+          await fetch(sessionApi('/erase_turn'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ index: turnIdx }),
+          });
+          await fetchChat();
+        } catch (e) {
+          console.error('Erase turn failed:', e);
+        }
+      }
+    );
+  }
+
+  async function restartServer() {
+    if (!activeSessionId) return;
+    showConfirm(
+      'Restart Council?',
+      'The server will shut down and restart. The page will reload once the server is back.',
+      async () => {
+        try {
+          await fetch(sessionApi('/restart'), { method: 'POST' });
+          let attempts = 0;
+          const poll = setInterval(async () => {
+            attempts++;
+            try {
+              const res = await fetch('/api/sessions');
+              if (res.ok) {
+                clearInterval(poll);
+                window.location.reload();
+              }
+            } catch (_) {}
+            if (attempts > 60) {
+              clearInterval(poll);
+              window.location.reload();
+            }
+          }, 1000);
+        } catch (e) {
+          console.error('Restart failed:', e);
+        }
+      }
+    );
   }
 
   async function cancelDispatch() {
@@ -337,6 +668,14 @@
     }
   }
 
+  function cleanTraceText(text) {
+    return String(text || '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  }
+
   function appendTraceEvent(event) {
     const item = document.createElement('div');
     item.className = 'trace-item';
@@ -347,7 +686,7 @@
 
     const message = document.createElement('div');
     message.className = 'trace-message';
-    message.textContent = event.message || '';
+    message.textContent = cleanTraceText(event.message);
 
     item.appendChild(meta);
     item.appendChild(message);
@@ -355,7 +694,7 @@
     if (event.detail) {
       const detail = document.createElement('div');
       detail.className = 'trace-detail';
-      detail.textContent = event.detail;
+      detail.textContent = cleanTraceText(event.detail);
       item.appendChild(detail);
     }
 
@@ -420,7 +759,12 @@
 
     if (data.busy) {
       statusIndicator.className = 'busy';
-      statusIndicator.innerHTML = '&#9679; @' + (data.agent || '?') + ' thinking&hellip;';
+      const agentName = data.agent || '?';
+      if (agentName === 'summarizer') {
+        statusIndicator.innerHTML = '&#9679; compacting&hellip;';
+      } else {
+        statusIndicator.innerHTML = '&#9679; @' + agentName + ' thinking&hellip;';
+      }
       cancelBtn.classList.remove('hidden');
     } else {
       statusIndicator.className = 'idle';
@@ -520,11 +864,19 @@
   acBox.className = 'hidden';
   document.body.appendChild(acBox);
 
+  const COMMANDS = [
+    { name: 'compact', description: 'Summarize chat log', action: compactChat },
+    { name: 'erase', description: 'Erase all chat turns', action: eraseChat },
+    { name: 'clear', description: 'Clear all chat turns', action: eraseChat },
+    { name: 'restart', description: 'Restart Council server', action: restartServer },
+  ];
+
   let acState = {
     open: false,
     items: [],
     selectedIdx: 0,
     triggerStart: -1,
+    triggerChar: '',
     query: '',
   };
 
@@ -533,6 +885,7 @@
     acState.items = [];
     acState.selectedIdx = 0;
     acState.triggerStart = -1;
+    acState.triggerChar = '';
     acState.query = '';
     acBox.classList.add('hidden');
     acBox.innerHTML = '';
@@ -552,7 +905,7 @@
       row.className = 'ac-row' + (i === acState.selectedIdx ? ' selected' : '');
       const kind = document.createElement('span');
       kind.className = 'ac-kind ac-kind-' + it.kind;
-      kind.textContent = it.kind === 'agent' ? 'agent' : 'file';
+      kind.textContent = it.kind === 'command' ? 'cmd' : (it.kind === 'agent' ? 'agent' : 'file');
       const label = document.createElement('span');
       label.className = 'ac-label';
       label.textContent = it.label;
@@ -595,10 +948,21 @@
     return items.slice(0, 40);
   }
 
+  function buildCommandItems(query) {
+    const q = query.toLowerCase();
+    return COMMANDS
+      .filter(c => c.name.startsWith(q))
+      .map(c => ({ label: '/' + c.name + ' - ' + c.description, insert: c.name, kind: 'command', description: c.description }));
+  }
+
   async function refreshAC() {
     if (!acState.open) return;
-    const data = await fetchCompletions(acState.query);
-    acState.items = buildItems(data);
+    if (acState.triggerChar === '/') {
+      acState.items = buildCommandItems(acState.query);
+    } else {
+      const data = await fetchCompletions(acState.query);
+      acState.items = buildItems(data);
+    }
     if (acState.selectedIdx >= acState.items.length) {
       acState.selectedIdx = 0;
     }
@@ -617,7 +981,7 @@
     const before = val.slice(0, acState.triggerStart);
     const afterStart = acState.triggerStart + 1 + acState.query.length;
     const after = val.slice(afterStart);
-    const inserted = '@' + it.insert + ' ';
+    const inserted = acState.triggerChar + it.insert + ' ';
     msgInput.value = before + inserted + after;
     const caret = (before + inserted).length;
     msgInput.setSelectionRange(caret, caret);
@@ -630,11 +994,13 @@
     const caret = msgInput.selectionStart;
     let i = caret - 1;
     let trigger = -1;
+    let triggerCh = '';
     while (i >= 0) {
       const ch = val[i];
-      if (ch === '@') {
+      if (ch === '@' || ch === '/') {
         if (i === 0 || /\s/.test(val[i - 1])) {
           trigger = i;
+          triggerCh = ch;
         }
         break;
       }
@@ -652,6 +1018,7 @@
     }
     acState.open = true;
     acState.triggerStart = trigger;
+    acState.triggerChar = triggerCh;
     acState.query = query;
     refreshAC();
   }
@@ -700,6 +1067,7 @@
 
   sendBtn.addEventListener('click', sendMessage);
   compactBtn.addEventListener('click', compactChat);
+  eraseBtn.addEventListener('click', eraseChat);
   cancelBtn.addEventListener('click', cancelDispatch);
   configToggleBtn.addEventListener('click', () => {
     configPanel.classList.toggle('hidden');

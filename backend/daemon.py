@@ -8,8 +8,9 @@ from pathlib import Path
 
 from .state import Session, SessionRegistry
 from .prompt_builder import build_prompt
+from .agent_memory import write_agent_memory
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
-                            DispatchResult)
+                            DispatchResult, estimate_tokens)
 from .summarizer import compact_chat
 from .mentions import find_first_mention, find_tail_mention, neutralize_agent_mentions
 
@@ -100,8 +101,49 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     chat_path = session.chat_path
 
     last_processed_header = _read_latest_turn_header(chat_path)
-    pending_mentions: asyncio.Queue[str] = asyncio.Queue()
-    queued_mentions: set[str] = set()
+    pending_mentions: list[dict[str, str]] = []
+    pending_changed = asyncio.Condition()
+
+    async def enqueue_mention(agent: str, source: str, header: str) -> None:
+        nonlocal pending_mentions
+
+        async with pending_changed:
+            if source == "user":
+                pending_mentions = [
+                    request for request in pending_mentions
+                    if not (
+                        request["agent"] == agent
+                        and request["source"] == "user"
+                    )
+                ]
+                pending_mentions.append({
+                    "agent": agent,
+                    "source": source,
+                    "header": header,
+                })
+                pending_changed.notify()
+            else:
+                already_pending = any(
+                    request["agent"] == agent
+                    for request in pending_mentions
+                )
+                if already_pending or session.current_agent == agent:
+                    return
+                pending_mentions.append({
+                    "agent": agent,
+                    "source": source,
+                    "header": header,
+                })
+                pending_changed.notify()
+
+        if source == "user" and session.current_agent == agent:
+            await session.cancel_current_dispatch()
+
+    async def next_mention() -> dict[str, str]:
+        async with pending_changed:
+            while not pending_mentions:
+                await pending_changed.wait()
+            return pending_mentions.pop(0)
 
     async def watcher():
         nonlocal last_processed_header
@@ -122,14 +164,12 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         author = t["author"]
                         if author == "you":
                             mention = find_first_mention(t["body"])
-                            if mention and mention not in queued_mentions:
-                                queued_mentions.add(mention)
-                                await pending_mentions.put(mention)
+                            if mention:
+                                await enqueue_mention(mention, "user", t["header"])
                         elif author in ("claude", "codex", "deepseek"):
                             mention = find_tail_mention(t["body"])
-                            if mention and mention not in queued_mentions:
-                                queued_mentions.add(mention)
-                                await pending_mentions.put(mention)
+                            if mention:
+                                await enqueue_mention(mention, "agent", t["header"])
                         last_processed_header = t["header"]
 
             except Exception:
@@ -140,15 +180,22 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     async def worker():
         nonlocal last_processed_header
         while True:
-            mention = await pending_mentions.get()
+            request = await next_mention()
+            mention = request["agent"]
             config = session.effective_config()
             max_chars = config["dispatch"]["max_prompt_chars"]
             auto_threshold = config["compact"]["auto_threshold_lines"]
             await session.set_busy(mention)
+            captured_output_parts: list[str] = []
             try:
                 role = _get_role(config, mention)
                 prompt = build_prompt(
-                    mention, session.project_root, chat_path, max_chars, role=role
+                    mention,
+                    session.project_root,
+                    chat_path,
+                    max_chars,
+                    role=role,
+                    session_dir=session.session_dir,
                 )
                 binary = _get_binary(config, mention)
                 model = _get_model(config, mention)
@@ -178,11 +225,13 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     f"runtime={runtime} command={command_hint} "
                     f"timeout={_format_timeout(_agent_timeout(config, mention))} "
                     f"prompt_chars={len(prompt)} "
+                    f"prompt_tokens_est={estimate_tokens(prompt)} "
                     f"role_chars={len(role)} "
                     f"cwd={session.project_root}",
                 )
 
                 async def trace_agent_output(source: str, text: str):
+                    captured_output_parts.append(f"[{source}]\n{text}")
                     await session.add_trace(
                         mention,
                         f"{source}",
@@ -206,6 +255,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         )
                     if mention == "deepseek":
                         async def trace_opencode_output(source: str, text: str):
+                            captured_output_parts.append(f"[opencode {source}]\n{text}")
                             await session.add_trace(
                                 "deepseek",
                                 f"opencode {source}",
@@ -216,6 +266,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                             prompt, session.project_root,
                             _agent_timeout(config, mention),
                             model=_get_model_deepseek(config),
+                            effort=effort,
                             on_output=trace_opencode_output,
                         )
                     raise ValueError(f"Unknown agent: {mention}")
@@ -228,13 +279,30 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     await session.set_dispatch_task(None)
 
                 response = result.text
+                artifact_path = write_agent_memory(
+                    session.session_dir,
+                    mention,
+                    "completed",
+                    final_response=response,
+                    captured_output="\n\n".join(captured_output_parts),
+                    usage=result.usage,
+                )
                 await session.add_trace(
                     mention,
                     "dispatch completed",
                     f"response_chars={len(response)} "
-                    f"{_format_usage(result.usage)}",
+                    f"response_tokens_est={estimate_tokens(response)} "
+                    f"{_format_usage(result.usage)} "
+                    f"memory={artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}",
                 )
-                session.append_turn(mention, response, usage=result.usage)
+                session.append_turn(
+                    mention, response,
+                    usage=result.usage,
+                    metadata={
+                        "prompt_tokens_est": estimate_tokens(prompt),
+                        "response_tokens_est": estimate_tokens(response),
+                    },
+                )
                 await session.notify_chat_update()
 
                 if chat_path.exists():
@@ -248,25 +316,40 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
+                artifact_path = write_agent_memory(
+                    session.session_dir,
+                    mention,
+                    "cancelled",
+                    captured_output="\n\n".join(captured_output_parts),
+                    error="Stopped by user.",
+                )
                 await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
                 safe_body = neutralize_agent_mentions(
-                    f"agent {mention} dispatch cancelled by user."
+                    f"agent {mention} dispatch cancelled by user. Partial effort saved for @{mention}: "
+                    f"`{artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}`"
                 )
                 session.append_turn("system", safe_body, kind="system_turn")
                 await session.notify_chat_update()
             except Exception as e:
                 logger.exception("Dispatch error")
+                artifact_path = write_agent_memory(
+                    session.session_dir,
+                    mention,
+                    "failed",
+                    captured_output="\n\n".join(captured_output_parts),
+                    error=str(e),
+                )
                 await session.add_trace(mention, "dispatch failed", str(e))
                 safe_reason = neutralize_agent_mentions(str(e)).strip()
                 session.append_turn(
                     "system",
-                    f"error: agent {mention} dispatch failed: {safe_reason}",
+                    f"error: agent {mention} dispatch failed: {safe_reason}\n\n"
+                    f"Partial effort saved for @{mention}: "
+                    f"`{artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}`",
                     kind="system_turn",
                 )
                 await session.notify_chat_update()
             finally:
                 await session.set_idle()
-                queued_mentions.discard(mention)
-                pending_mentions.task_done()
 
     await asyncio.gather(watcher(), worker())

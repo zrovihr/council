@@ -35,6 +35,7 @@
       <span id="status-indicator" class="idle">&#9679; idle</span>
       <button id="cancel-btn" class="hidden" title="Stop active agent">Cancel</button>
       <button id="compact-btn" title="Summarize chat log">/compact</button>
+      <button id="erase-btn" title="Clear chat log">/clear</button>
     </header>
     <section id="config-panel" class="hidden" aria-label="Agent configuration">
       <label id="global-config-toggle">
@@ -62,6 +63,16 @@
     <div id="trace-title">Agent Trace</div>
     <div id="trace-list"></div>
   </aside>
+</div>
+<div id="confirm-overlay" class="hidden">
+  <div id="confirm-box">
+    <div id="confirm-title"></div>
+    <div id="confirm-msg"></div>
+    <div id="confirm-actions">
+      <button id="confirm-yes-btn">Yes</button>
+      <button id="confirm-no-btn">No</button>
+    </div>
+  </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>

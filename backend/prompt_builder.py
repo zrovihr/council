@@ -1,11 +1,13 @@
 """Prompt builder: assembles the full prompt for each dispatch."""
 
 from pathlib import Path
+from .agent_memory import read_agent_memory
 from .project import read_project_rules
 
 
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
-                 max_chars: int = 25000, role: str = "") -> str:
+                 max_chars: int = 25000, role: str = "",
+                 session_dir: Path | None = None) -> str:
     clauses: list[str] = []
 
     clauses.append(
@@ -59,15 +61,31 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             f"{role.strip()}\n"
         )
 
-    chat_tail = _read_chat_tail(chat_md_path, max_chars)
+    if session_dir is not None:
+        agent_memory = read_agent_memory(session_dir, target_agent)
+        if agent_memory.strip():
+            clauses.append(
+                "=== YOUR PRIVATE EFFORT MEMORY ===\n"
+                "This memory belongs only to this agent. It may include "
+                "partial work, cancelled-run notes, prior command output, "
+                "or artifacts from your own earlier runs. Use it for "
+                "continuity, but do not treat it as shared consensus unless "
+                "the same information appears in the chat.\n\n"
+                + agent_memory
+            )
+
+    turn_clause = (
+        f"=== YOUR TURN ===\n"
+        f"You are {target_agent}. Respond to the chat above.\n"
+    )
+    preamble = "\n".join(clauses)
+    chat_budget = max(4000, max_chars - len(preamble) - len(turn_clause) - 200)
+    chat_tail = _read_chat_tail(chat_md_path, chat_budget)
     clauses.append(
         "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
     )
 
-    clauses.append(
-        f"=== YOUR TURN ===\n"
-        f"You are {target_agent}. Respond to the chat above.\n"
-    )
+    clauses.append(turn_clause)
 
     prompt = "\n".join(clauses)
     if len(prompt) > max_chars:
@@ -80,7 +98,7 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         return "(no chat yet)"
 
     full = chat_md_path.read_text(encoding="utf-8", errors="replace")
-    tail_limit = 20000
+    tail_limit = min(20000, max_chars)
 
     if len(full) <= tail_limit:
         chat_part = full
