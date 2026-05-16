@@ -230,7 +230,9 @@ class Session:
     last_used_at: str = field(default_factory=utc_now)
     busy: bool = False
     current_agent: Optional[str] = None
+    current_dispatch: Optional[dict] = None
     current_dispatch_task: Optional[asyncio.Task] = None
+    dispatch_queue: list[dict] = field(default_factory=list)
     trace_events: list[dict] = field(default_factory=list)
     subscribers: list = field(default_factory=list)
 
@@ -342,10 +344,38 @@ class Session:
             "busy": self.busy,
             "agent": self.current_agent,
             "current_agent": self.current_agent,
+            "current_dispatch": self.current_dispatch,
+            "dispatch_queue": self.dispatch_queue_snapshot(),
             "project": self.project_name,
             "session_id": self.id,
             "agents": build_agent_info(self.config, self.state),
         })
+
+    def dispatch_queue_snapshot(self) -> list[dict]:
+        return [item.copy() for item in self.dispatch_queue]
+
+    async def set_dispatch_queue(self, queue: list[dict]) -> None:
+        self.dispatch_queue = queue
+        await self.broadcast_status()
+
+    async def set_current_dispatch(self, request: dict | None) -> None:
+        self.current_dispatch = request.copy() if request else None
+        await self.broadcast_status()
+
+    async def cancel_dispatch_request(self, request_id: str) -> bool:
+        if self.current_dispatch and self.current_dispatch.get("id") == request_id:
+            return await self.cancel_current_dispatch()
+        for i, item in enumerate(self.dispatch_queue):
+            if item.get("id") == request_id:
+                removed = self.dispatch_queue.pop(i)
+                await self.add_trace(
+                    removed.get("agent") or "system",
+                    "queued dispatch cancelled",
+                    "Removed from pending dispatch queue.",
+                )
+                await self.broadcast_status()
+                return True
+        return False
 
     async def set_busy(self, agent: str):
         self.busy = True
@@ -355,6 +385,7 @@ class Session:
     async def set_idle(self):
         self.busy = False
         self.current_agent = None
+        self.current_dispatch = None
         await self.broadcast_status()
 
     async def set_dispatch_task(self, task: asyncio.Task | None):

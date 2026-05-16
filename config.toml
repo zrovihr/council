@@ -36,6 +36,7 @@ deepseek = ["low", "medium", "high"]
 [dispatch]
 timeout_seconds = 0
 max_prompt_chars = 25000
+chain_depth_limit = 3
 
 [compact]
 auto_threshold_lines = 2000

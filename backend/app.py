@@ -265,6 +265,14 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             return JSONResponse({"error": "no active dispatch"}, status_code=409)
         return {"ok": True}
 
+    @app.post("/api/sessions/{session_id}/dispatch/{request_id}/cancel")
+    async def post_cancel_dispatch_request(session_id: str, request_id: str):
+        session = _get_session(registry, session_id)
+        cancelled = await session.cancel_dispatch_request(request_id)
+        if not cancelled:
+            return JSONResponse({"error": "dispatch request not found"}, status_code=404)
+        return {"ok": True}
+
     @app.post("/api/sessions/{session_id}/restart")
     async def post_restart(session_id: str):
         session = _get_session(registry, session_id)
@@ -355,6 +363,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "busy": session.busy,
             "current_agent": session.current_agent,
             "agent": session.current_agent,
+            "current_dispatch": session.current_dispatch,
+            "dispatch_queue": session.dispatch_queue_snapshot(),
             "project": session.project_name,
             "session": session.metadata(),
             "agents": build_agent_info(registry.config, session.state),

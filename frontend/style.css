@@ -431,6 +431,89 @@ body {
   display: none;
 }
 
+#queue-menu-wrap {
+  position: relative;
+}
+
+#queue-btn {
+  background: #171b24;
+  color: var(--text-dim);
+  border: 1px solid rgba(96,165,250,0.35);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--mono);
+}
+#queue-btn:hover {
+  color: var(--text);
+  border-color: #60a5fa;
+}
+#queue-btn.hidden {
+  display: none;
+}
+
+#queue-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 250;
+  min-width: 260px;
+  max-width: 360px;
+  background: #1f1f23;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  padding: 6px;
+}
+#queue-menu.hidden {
+  display: none;
+}
+.queue-item {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 7px 6px;
+}
+.queue-item + .queue-item {
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.queue-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.queue-item-state {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.queue-item-label {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-cancel-btn {
+  background: #2a1212;
+  border: 1px solid rgba(248,113,113,0.45);
+  border-radius: 4px;
+  color: #fca5a5;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.queue-cancel-btn:hover {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
 /* ---- Config Panel ---- */
 
 #config-panel {
@@ -1049,6 +1132,108 @@ body {
 
 #confirm-yes-btn:hover {
   background: #b91c1c;
+}
+
+/* ---- Edit Modal ---- */
+
+#edit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+  padding: 24px;
+}
+
+#edit-overlay.hidden {
+  display: none;
+}
+
+#edit-box {
+  background: #1c1c1f;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 36px rgba(0,0,0,0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(760px, 88vh);
+  max-width: min(920px, 92vw);
+  padding: 16px;
+  width: 760px;
+}
+
+#edit-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+#edit-textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  flex: 1;
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 320px;
+  outline: none;
+  padding: 10px 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+#edit-textarea:focus {
+  border-color: var(--accent);
+}
+
+#edit-error {
+  color: #fca5a5;
+  font-family: var(--mono);
+  font-size: 11px;
+  min-height: 16px;
+}
+
+#edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#edit-save-btn,
+#edit-cancel-btn {
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 14px;
+}
+
+#edit-save-btn {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #111113;
+  font-weight: 700;
+}
+
+#edit-save-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+#edit-cancel-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+#edit-cancel-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
 }
 
 /* ---- File Menu ---- */

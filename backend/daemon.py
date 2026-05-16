@@ -1,6 +1,7 @@
 """Daemon: watches each session chat.md for @mentions and dispatches agents."""
 
 import asyncio
+import hashlib
 import json
 import re
 import logging
@@ -89,6 +90,11 @@ def _mention_key(header: str, agent: str) -> str:
     return f"{header}\t{agent}"
 
 
+def _request_id(header: str, agent: str) -> str:
+    digest = hashlib.sha1(_mention_key(header, agent).encode("utf-8")).hexdigest()[:12]
+    return f"{agent}:{digest}"
+
+
 def _load_dispatch_ledger(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -139,6 +145,17 @@ def _request_still_valid(chat_path: Path, request: dict[str, str]) -> bool:
     return False
 
 
+def _seed_dispatch_ledger(turns: list[dict], dispatched_mentions: set[str]) -> bool:
+    changed = False
+    for turn in turns:
+        for agent in _turn_mentions(turn):
+            key = _mention_key(turn["header"], agent)
+            if key not in dispatched_mentions:
+                dispatched_mentions.add(key)
+                changed = True
+    return changed
+
+
 def _agent_timeout(config: dict, agent: str) -> int:
     dispatch = config.get("dispatch", {})
     default_timeout = dispatch.get("timeout_seconds", 300)
@@ -170,16 +187,17 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     dispatched_mentions = _load_dispatch_ledger(dispatch_ledger_path)
     if chat_path.exists() and not dispatched_mentions:
         text = chat_path.read_text(encoding="utf-8", errors="replace")
-        for turn in _parse_turns(text):
-            for agent in _turn_mentions(turn):
-                dispatched_mentions.add(_mention_key(turn["header"], agent))
-        _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
-    pending_mentions: list[dict[str, str]] = []
+        if _seed_dispatch_ledger(_parse_turns(text), dispatched_mentions):
+            _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
+    pending_mentions = session.dispatch_queue
     pending_changed = asyncio.Condition()
+    await session.set_dispatch_queue(pending_mentions)
 
     async def enqueue_mention(agent: str, source: str, header: str) -> None:
         nonlocal pending_mentions
 
+        if source != "user" and session.current_agent == agent:
+            return
         key = _mention_key(header, agent)
         if key in dispatched_mentions:
             return
@@ -189,26 +207,30 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         async with pending_changed:
             if source == "user":
                 pending_mentions.append({
+                    "id": _request_id(header, agent),
                     "agent": agent,
                     "source": source,
                     "header": header,
                 })
+                await session.broadcast_status()
                 pending_changed.notify()
             else:
-                if session.current_agent == agent:
-                    return
                 pending_mentions.append({
+                    "id": _request_id(header, agent),
                     "agent": agent,
                     "source": source,
                     "header": header,
                 })
+                await session.broadcast_status()
                 pending_changed.notify()
 
     async def next_mention() -> dict[str, str]:
         async with pending_changed:
             while not pending_mentions:
                 await pending_changed.wait()
-            return pending_mentions.pop(0)
+            request = pending_mentions.pop(0)
+            await session.broadcast_status()
+            return request
 
     async def watcher():
         nonlocal last_processed_header
@@ -222,8 +244,19 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     if last_processed_header:
                         header_idx = _find_header_index(turns, last_processed_header)
                         if header_idx is None:
-                            start_idx = 0
-                            last_processed_header = ""
+                            if _seed_dispatch_ledger(turns, dispatched_mentions):
+                                _save_dispatch_ledger(
+                                    dispatch_ledger_path,
+                                    dispatched_mentions,
+                                )
+                            last_processed_header = turns[-1]["header"] if turns else ""
+                            await session.add_trace(
+                                "system",
+                                "chat rewrite detected",
+                                "Dispatch cursor resynced without replaying old mentions.",
+                            )
+                            await asyncio.sleep(1)
+                            continue
                         else:
                             start_idx = header_idx + 1
 
@@ -246,14 +279,30 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
 
     async def worker():
         nonlocal last_processed_header
+        consecutive_agent_dispatches = 0
         while True:
             request = await next_mention()
             if not _request_still_valid(chat_path, request):
                 continue
             mention = request["agent"]
             config = session.effective_config()
+            chain_depth_limit = config.get("dispatch", {}).get("chain_depth_limit", 3)
+            if request["source"] == "user":
+                consecutive_agent_dispatches = 0
+            else:
+                consecutive_agent_dispatches += 1
+                if consecutive_agent_dispatches > chain_depth_limit:
+                    safe_body = neutralize_agent_mentions(
+                        f"Chain depth limit ({chain_depth_limit}) reached. "
+                        f"Dispatch of agent {mention} was suppressed to prevent "
+                        f"an infinite agent-agent loop. User intervention required."
+                    )
+                    session.append_turn("system", safe_body, kind="system_turn")
+                    await session.notify_chat_update()
+                    continue
             max_chars = config["dispatch"]["max_prompt_chars"]
             auto_threshold = config["compact"]["auto_threshold_lines"]
+            await session.set_current_dispatch(request)
             await session.set_busy(mention)
             captured_output_parts: list[str] = []
             try:

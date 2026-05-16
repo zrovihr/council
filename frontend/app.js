@@ -17,6 +17,8 @@
   const confirmYesBtn = document.getElementById('confirm-yes-btn');
   const confirmNoBtn = document.getElementById('confirm-no-btn');
   const statusIndicator = document.getElementById('status-indicator');
+  const queueBtn = document.getElementById('queue-btn');
+  const queueMenu = document.getElementById('queue-menu');
   const projectNameEl = document.getElementById('project-name');
   const agentModelsEl = document.getElementById('agent-models');
   const configToggleBtn = document.getElementById('config-toggle-btn');
@@ -30,6 +32,11 @@
   const newSessionName = document.getElementById('new-session-name');
   const newSessionProject = document.getElementById('new-session-project');
   const cancelSessionBtn = document.getElementById('cancel-session-btn');
+  const editOverlay = document.getElementById('edit-overlay');
+  const editTextarea = document.getElementById('edit-textarea');
+  const editError = document.getElementById('edit-error');
+  const editSaveBtn = document.getElementById('edit-save-btn');
+  const editCancelBtn = document.getElementById('edit-cancel-btn');
 
   let userScrolledUp = false;
   let isRenderingChat = false;
@@ -39,6 +46,7 @@
   let latestGlobalAgents = {};
   let sessions = [];
   let activeSessionId = null;
+  let editState = null;
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -516,11 +524,13 @@
 
   async function fetchChat() {
     if (!activeSessionId) return;
+    const targetSessionId = activeSessionId;
     try {
       const [chatRes, eventsRes] = await Promise.all([
-        fetch(sessionApi('/chat')),
-        fetch(sessionApi('/events')),
+        fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/chat`),
+        fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/events`),
       ]);
+      if (targetSessionId !== activeSessionId) return;
       const chatData = await chatRes.json();
       const turns = parseChatMD(chatData.text || '');
       let tokenData = null;
@@ -619,64 +629,26 @@
 
   async function startEditTurn(card, body, turnIdx, originalText) {
     if (isRenderingChat) return;
-
-    body.style.display = 'none';
-
-    let editorEl = card.querySelector('.turn-editor');
-    if (!editorEl) {
-      editorEl = document.createElement('div');
-      editorEl.className = 'turn-editor';
-      card.appendChild(editorEl);
-    }
-    const textarea = document.createElement('textarea');
-    textarea.className = 'turn-editor-textarea';
-    textarea.value = originalText;
-    editorEl.innerHTML = '';
-    editorEl.appendChild(textarea);
-
-    const actions = document.createElement('div');
-    actions.className = 'turn-editor-actions';
-
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'turn-editor-save-btn';
-    saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', async () => {
-      await saveEditTurn(turnIdx, textarea.value, card, body, editorEl);
-    });
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'turn-editor-cancel-btn';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      cancelEditTurn(card, body, editorEl);
-    });
-
-    actions.appendChild(saveBtn);
-    actions.appendChild(cancelBtn);
-    editorEl.appendChild(actions);
-    editorEl.style.display = 'block';
-
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-
-    textarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        saveEditTurn(turnIdx, textarea.value, card, body, editorEl);
-      }
-      if (e.key === 'Escape') {
-        cancelEditTurn(card, body, editorEl);
-      }
-    });
+    editState = { turnIdx };
+    editError.textContent = '';
+    editTextarea.value = originalText;
+    editOverlay.classList.remove('hidden');
+    editTextarea.focus();
+    editTextarea.setSelectionRange(editTextarea.value.length, editTextarea.value.length);
   }
 
-  function cancelEditTurn(card, body, editorEl) {
-    editorEl.style.display = 'none';
-    body.style.display = '';
+  function cancelEditTurn() {
+    editState = null;
+    editOverlay.classList.add('hidden');
+    editError.textContent = '';
   }
 
-  async function saveEditTurn(turnIdx, newText, card, body, editorEl) {
-    if (!activeSessionId) return;
+  async function saveEditTurn() {
+    if (!activeSessionId || !editState) return;
+    const turnIdx = editState.turnIdx;
+    const newText = editTextarea.value;
+    editSaveBtn.disabled = true;
+    editError.textContent = '';
     try {
       const res = await fetch(sessionApi('/edit_turn'), {
         method: 'POST',
@@ -685,16 +657,16 @@
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        console.error('Edit failed:', err.error || res.statusText);
-        editorEl.style.display = 'none';
-        body.style.display = '';
+        editError.textContent = err.error || res.statusText || 'Edit failed';
         return;
       }
+      cancelEditTurn();
       await fetchChat();
     } catch (e) {
       console.error('Edit failed:', e);
-      editorEl.style.display = 'none';
-      body.style.display = '';
+      editError.textContent = 'Edit failed';
+    } finally {
+      editSaveBtn.disabled = false;
     }
   }
 
@@ -757,11 +729,29 @@
     }
   }
 
+  async function cancelDispatchRequest(requestId) {
+    if (!activeSessionId || !requestId) return;
+    try {
+      const res = await fetch(sessionApi('/dispatch/' + encodeURIComponent(requestId) + '/cancel'), {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error('Cancel dispatch request failed:', err.error || res.statusText);
+      }
+      await fetchStatus();
+    } catch (e) {
+      console.error('Cancel dispatch request failed:', e);
+    }
+  }
+
   async function fetchStatus() {
     if (!activeSessionId) return;
+    const targetSessionId = activeSessionId;
     try {
-      const res = await fetch(sessionApi('/status'));
+      const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/status`);
       const data = await res.json();
+      if (targetSessionId !== activeSessionId) return;
       updateStatus(data);
     } catch (_) {}
   }
@@ -793,9 +783,11 @@
 
   async function fetchTrace() {
     if (!activeSessionId) return;
+    const targetSessionId = activeSessionId;
     try {
-      const res = await fetch(sessionApi('/trace'));
+      const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/trace`);
       const data = await res.json();
+      if (targetSessionId !== activeSessionId) return;
       renderTrace(data.events || []);
     } catch (_) {}
   }
@@ -895,6 +887,7 @@
     latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
     renderAgentModels(latestAgents);
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
+    renderQueueStatus(data);
 
     if (data.busy) {
       statusIndicator.className = 'busy';
@@ -910,6 +903,63 @@
       statusIndicator.innerHTML = '&#9679; idle';
       cancelBtn.classList.add('hidden');
     }
+  }
+
+  function dispatchLabel(item) {
+    if (!item || !item.agent) return '@?';
+    const source = item.source === 'user' ? 'from you' : 'from agent';
+    return '@' + item.agent + ' ' + source;
+  }
+
+  function renderQueueStatus(data) {
+    const current = data.current_dispatch || null;
+    const queue = data.dispatch_queue || [];
+    const total = (current ? 1 : 0) + queue.length;
+    if (!total) {
+      queueBtn.classList.add('hidden');
+      queueMenu.classList.add('hidden');
+      queueMenu.innerHTML = '';
+      return;
+    }
+    queueBtn.classList.remove('hidden');
+    queueBtn.textContent = queue.length ? `Queue ${total}` : 'Queue 1';
+    queueMenu.innerHTML = '';
+
+    if (current) {
+      queueMenu.appendChild(makeQueueItem(current, 'Running'));
+    }
+    queue.forEach((item, idx) => {
+      queueMenu.appendChild(makeQueueItem(item, `Queued ${idx + 1}`));
+    });
+  }
+
+  function makeQueueItem(item, stateLabel) {
+    const row = document.createElement('div');
+    row.className = 'queue-item';
+
+    const text = document.createElement('div');
+    text.className = 'queue-item-text';
+    const state = document.createElement('span');
+    state.className = 'queue-item-state';
+    state.textContent = stateLabel;
+    const label = document.createElement('span');
+    label.className = 'queue-item-label';
+    label.textContent = dispatchLabel(item);
+    text.appendChild(state);
+    text.appendChild(label);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'queue-cancel-btn';
+    btn.textContent = 'Cancel';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cancelDispatchRequest(item.id);
+    });
+
+    row.appendChild(text);
+    row.appendChild(btn);
+    return row;
   }
 
   function renderAgentModels(agents) {
@@ -1208,6 +1258,30 @@
   compactBtn.addEventListener('click', compactChat);
   eraseBtn.addEventListener('click', eraseChat);
   cancelBtn.addEventListener('click', cancelDispatch);
+  queueBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    queueMenu.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    if (!queueMenu.classList.contains('hidden') && !e.target.closest('#queue-menu-wrap')) {
+      queueMenu.classList.add('hidden');
+    }
+  });
+  editSaveBtn.addEventListener('click', saveEditTurn);
+  editCancelBtn.addEventListener('click', cancelEditTurn);
+  editOverlay.addEventListener('click', (e) => {
+    if (e.target === editOverlay) cancelEditTurn();
+  });
+  editTextarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      saveEditTurn();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditTurn();
+    }
+  });
   configToggleBtn.addEventListener('click', () => {
     configPanel.classList.toggle('hidden');
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);

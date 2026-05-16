@@ -33,6 +33,10 @@
       </div>
       <button id="config-toggle-btn" title="Edit agent model, effort, and role">Config</button>
       <span id="status-indicator" class="idle">&#9679; idle</span>
+      <div id="queue-menu-wrap">
+        <button id="queue-btn" class="hidden" type="button" title="Show active and queued agents">Queue</button>
+        <div id="queue-menu" class="hidden"></div>
+      </div>
       <button id="cancel-btn" class="hidden" title="Stop active agent">Cancel</button>
       <button id="compact-btn" title="Summarize chat log">/compact</button>
       <button id="erase-btn" title="Clear chat log">/clear</button>
@@ -71,6 +75,17 @@
     <div id="confirm-actions">
       <button id="confirm-yes-btn">Yes</button>
       <button id="confirm-no-btn">No</button>
+    </div>
+  </div>
+</div>
+<div id="edit-overlay" class="hidden">
+  <div id="edit-box">
+    <div id="edit-title">Edit Message</div>
+    <textarea id="edit-textarea"></textarea>
+    <div id="edit-error"></div>
+    <div id="edit-actions">
+      <button id="edit-save-btn">Save</button>
+      <button id="edit-cancel-btn">Cancel</button>
     </div>
   </div>
 </div>
