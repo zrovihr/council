@@ -598,6 +598,18 @@ body {
   color: var(--text-dim);
 }
 
+.turn-token-badge {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+
 .turn-erase-btn {
   display: none;
   margin-left: auto;
@@ -620,6 +632,85 @@ body {
 }
 .turn-card:hover .turn-erase-btn {
   display: block;
+}
+
+.turn-edit-btn {
+  display: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 14px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.turn-edit-btn:hover {
+  color: #c5b4fc;
+  border-color: rgba(167,139,250,0.45);
+  background: #1a142a;
+}
+.turn-card:hover .turn-edit-btn {
+  display: block;
+}
+
+.turn-editor {
+  display: none;
+  padding: 0.5rem 0 0 0;
+}
+.turn-editor-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 0.6rem 0.75rem;
+  background: #1a1a2e;
+  color: #e2e8f0;
+  border: 1px solid #3b3b60;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.turn-editor-textarea:focus {
+  outline: none;
+  border-color: #7c6ff7;
+}
+.turn-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  justify-content: flex-end;
+}
+.turn-editor-save-btn {
+  padding: 4px 14px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.turn-editor-save-btn:hover {
+  background: #6366f1;
+}
+.turn-editor-cancel-btn {
+  padding: 4px 14px;
+  background: #2a2a3e;
+  color: var(--text-dim);
+  border: 1px solid #3b3b60;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.turn-editor-cancel-btn:hover {
+  background: #3b3b60;
+  color: #e2e8f0;
 }
 
 .turn-body {

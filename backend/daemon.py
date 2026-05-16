@@ -13,7 +13,7 @@ from .agent_memory import write_agent_memory
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
                             DispatchResult, estimate_tokens)
 from .summarizer import compact_chat
-from .mentions import find_agent_mentions, find_tail_mention, neutralize_agent_mentions
+from .mentions import find_agent_mentions, neutralize_agent_mentions
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +112,8 @@ def _save_dispatch_ledger(path: Path, dispatched: set[str]) -> None:
 
 def _turn_mentions(turn: dict) -> list[str]:
     author = turn["author"]
-    if author == "you":
+    if author in ("you", "claude", "codex", "deepseek"):
         return find_agent_mentions(turn["body"])
-    if author in ("claude", "codex", "deepseek"):
-        mention = find_tail_mention(turn["body"])
-        return [mention] if mention else []
     return []
 
 
@@ -206,9 +203,6 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     "header": header,
                 })
                 pending_changed.notify()
-
-        if source == "user" and session.current_agent == agent:
-            await session.cancel_current_dispatch()
 
     async def next_mention() -> dict[str, str]:
         async with pending_changed:

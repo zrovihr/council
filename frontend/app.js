@@ -126,7 +126,13 @@
     return turns;
   }
 
-  function renderTurns(turns) {
+  function formatTokenCount(n) {
+    if (!n || n <= 0) return null;
+    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+
+  function renderTurns(turns, tokenData) {
     const previousScrollHeight = chatArea.scrollHeight;
     const previousScrollTop = chatArea.scrollTop;
     const previousDistanceFromBottom = previousScrollHeight - previousScrollTop - chatArea.clientHeight;
@@ -158,6 +164,44 @@
       timeSpan.className = 'turn-time';
       timeSpan.textContent = turn.time;
 
+      header.appendChild(avatar);
+      header.appendChild(authorSpan);
+      header.appendChild(timeSpan);
+
+      const td = tokenData && tokenData[turnIdx];
+      if (td) {
+        const inTok = formatTokenCount(td.prompt_tokens_est);
+        const outTok = formatTokenCount(td.response_tokens_est);
+        if (inTok || outTok) {
+          const badge = document.createElement('span');
+          badge.className = 'turn-token-badge';
+          const parts = [];
+          if (inTok) parts.push('~' + inTok + ' in');
+          if (outTok) parts.push('~' + outTok + ' out');
+          badge.textContent = parts.join(' / ');
+          if (td.token_usage && td.token_usage.total_tokens) {
+            badge.title = 'prompt=' + (td.token_usage.prompt_tokens || '?') +
+              ' completion=' + (td.token_usage.completion_tokens || '?') +
+              ' total=' + td.token_usage.total_tokens;
+          } else {
+            badge.title = 'char/4 estimate';
+          }
+          header.appendChild(badge);
+        }
+      }
+
+      if (turn.author === 'you') {
+        const editBtn = document.createElement('button');
+        editBtn.className = 'turn-edit-btn';
+        editBtn.textContent = '\u270E';
+        editBtn.title = 'Edit this message';
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startEditTurn(card, body, turnIdx, turn.body);
+        });
+        header.appendChild(editBtn);
+      }
+
       const eraseBtn = document.createElement('button');
       eraseBtn.className = 'turn-erase-btn';
       eraseBtn.textContent = '\u00D7';
@@ -166,10 +210,6 @@
         e.stopPropagation();
         eraseTurn(turnIdx);
       });
-
-      header.appendChild(avatar);
-      header.appendChild(authorSpan);
-      header.appendChild(timeSpan);
       header.appendChild(eraseBtn);
 
       const body = document.createElement('div');
@@ -477,9 +517,24 @@
   async function fetchChat() {
     if (!activeSessionId) return;
     try {
-      const res = await fetch(sessionApi('/chat'));
-      const data = await res.json();
-      renderTurns(parseChatMD(data.text || ''));
+      const [chatRes, eventsRes] = await Promise.all([
+        fetch(sessionApi('/chat')),
+        fetch(sessionApi('/events')),
+      ]);
+      const chatData = await chatRes.json();
+      const turns = parseChatMD(chatData.text || '');
+      let tokenData = null;
+      if (eventsRes.ok) {
+        const eventsData = await eventsRes.json();
+        const td = {};
+        eventsData.turns.forEach((evt, i) => {
+          if (evt.prompt_tokens_est || evt.response_tokens_est) {
+            td[i] = evt;
+          }
+        });
+        if (Object.keys(td).length > 0) tokenData = td;
+      }
+      renderTurns(turns, tokenData);
     } catch (e) {
       console.error('Failed to fetch chat:', e);
     }
@@ -560,6 +615,87 @@
         }
       }
     );
+  }
+
+  async function startEditTurn(card, body, turnIdx, originalText) {
+    if (isRenderingChat) return;
+
+    body.style.display = 'none';
+
+    let editorEl = card.querySelector('.turn-editor');
+    if (!editorEl) {
+      editorEl = document.createElement('div');
+      editorEl.className = 'turn-editor';
+      card.appendChild(editorEl);
+    }
+    const textarea = document.createElement('textarea');
+    textarea.className = 'turn-editor-textarea';
+    textarea.value = originalText;
+    editorEl.innerHTML = '';
+    editorEl.appendChild(textarea);
+
+    const actions = document.createElement('div');
+    actions.className = 'turn-editor-actions';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'turn-editor-save-btn';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', async () => {
+      await saveEditTurn(turnIdx, textarea.value, card, body, editorEl);
+    });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'turn-editor-cancel-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      cancelEditTurn(card, body, editorEl);
+    });
+
+    actions.appendChild(saveBtn);
+    actions.appendChild(cancelBtn);
+    editorEl.appendChild(actions);
+    editorEl.style.display = 'block';
+
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        saveEditTurn(turnIdx, textarea.value, card, body, editorEl);
+      }
+      if (e.key === 'Escape') {
+        cancelEditTurn(card, body, editorEl);
+      }
+    });
+  }
+
+  function cancelEditTurn(card, body, editorEl) {
+    editorEl.style.display = 'none';
+    body.style.display = '';
+  }
+
+  async function saveEditTurn(turnIdx, newText, card, body, editorEl) {
+    if (!activeSessionId) return;
+    try {
+      const res = await fetch(sessionApi('/edit_turn'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: turnIdx, text: newText }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error('Edit failed:', err.error || res.statusText);
+        editorEl.style.display = 'none';
+        body.style.display = '';
+        return;
+      }
+      await fetchChat();
+    } catch (e) {
+      console.error('Edit failed:', e);
+      editorEl.style.display = 'none';
+      body.style.display = '';
+    }
   }
 
   async function eraseTurn(turnIdx) {

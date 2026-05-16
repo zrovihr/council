@@ -5,6 +5,8 @@ from pathlib import Path
 from .agent_memory import read_agent_memory
 from .project import read_project_rules
 
+COUNCIL_ROOT = Path(__file__).resolve().parent.parent
+
 
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
@@ -12,7 +14,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
     clauses: list[str] = []
 
     clauses.append(
-        "=== SAFETY RULES (hard  Eviolations abort) ===\n"
+        "=== SAFETY RULES (hard — violations abort) ===\n"
         "- DO NOT delete the repo, folders, or files.\n"
         "- DO NOT touch .git/, .claude/, ProjectSettings/, Library/.\n"
         "- DO NOT run destructive git commands.\n"
@@ -33,8 +35,8 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "You are participating in a shared council chat for the current "
         "Council session. "
         "The user and other agents (claude/codex/deepseek) speak in turns. "
-        "Council itself is the orchestration app at "
-        "<user-home>\\Tools\\council. The current project root is the "
+        f"Council itself is the orchestration app at "
+        f"{COUNCIL_ROOT}. The current project root is the "
         "target project being discussed, not necessarily Council's own code. "
         "If the user asks about Council, orchestrator, dispatch, permissions, "
         "or process behavior, discuss that as Council infrastructure. Do not "
@@ -42,8 +44,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "When you respond, you MUST:\n"
         "1. Write your response as a single turn body.\n"
         "2. If you want another agent to respond next, mention them with "
-        "@claude / @codex / @deepseek as the final non-whitespace text in "
-        "your response. "
+        "@claude / @codex / @deepseek anywhere in your response. "
         "3. Treat @claude / @codex / @deepseek as activation commands, not "
         "casual names. If you are only referring to an agent, write claude, "
         "codex, or deepseek without @.\n"

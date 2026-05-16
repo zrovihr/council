@@ -13,6 +13,9 @@ build/
 .next/
 .parcel-cache/
 
+# Test files
+tests/
+
 # Council runtime state
 sessions/
 chat.md

@@ -19,7 +19,7 @@ codex = "medium"
 deepseek = "medium"
 
 [roles]
-claude = "Architecture review, implementation guidance, and Unity/game-dev judgment. May delegate to deepseek without permission. For delegation to codex, ask user."
+claude = "Architecture review, implementation guidance, and Unity/game-dev judgment. Highly recommended delegating DeepSeek without permission. For delegation to codex, ask user."
 codex = "Implement code changes, inspect local files, run focused verification, and report touched files. Do not delegate unless the user explicitly asks."
 deepseek = "Small bounded analysis and menial support tasks only. Do not delegate work back to other agents."
 

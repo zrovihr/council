@@ -20,7 +20,7 @@ Local browser-based multi-agent chat. User talks to Claude, Codex, and Deepseek 
 2. Type `council`
 3. Open the printed URL in your browser.
 4. Use the left rail to create, switch, or delete sessions.
-5. Type messages; use `@claude`, `@codex`, or `@deepseek` only when you want to activate that agent.
+5. Type messages; use `@claude`, `@codex`, or `@deepseek` anywhere in the message when you want to activate that agent.
 
 `@agent` is an activation command. To refer to an agent without summoning it, write the plain name, such as `deepseek`.
 

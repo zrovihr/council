@@ -317,14 +317,20 @@ class Session:
             "text": body,
             "display_ts": display_ts,
         }
-        if usage:
-            if "prompt_tokens" in usage:
-                event["prompt_tokens_est"] = usage["prompt_tokens"]
-            if "completion_tokens" in usage:
-                event["response_tokens_est"] = usage["completion_tokens"]
-            event["token_usage"] = usage
         if metadata:
             event["metadata"] = metadata
+        if usage:
+            event["token_usage"] = usage
+        pt = event.get("prompt_tokens_est") or (metadata or {}).get("prompt_tokens_est", 0)
+        rt = event.get("response_tokens_est") or (metadata or {}).get("response_tokens_est", 0)
+        if pt:
+            event["prompt_tokens_est"] = pt
+        if rt:
+            event["response_tokens_est"] = rt
+        if not pt and usage and "prompt_tokens" in usage:
+            event["prompt_tokens_est"] = usage["prompt_tokens"]
+        if not rt and usage and "completion_tokens" in usage:
+            event["response_tokens_est"] = usage["completion_tokens"]
         self.append_event(event)
         with open(self.chat_path, "a", encoding="utf-8") as f:
             f.write(render_turn(author, body, display_ts))
