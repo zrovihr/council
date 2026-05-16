@@ -148,7 +148,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
 
 def render_turn(author: str, text: str, timestamp: str | None = None) -> str:
     stamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"\n## [@{author}] {stamp}\n{text}\n\n---\n"
+    return f"\n## [@{author}] {stamp}\n{text}\n\n"
 
 
 def rebuild_chat_from_events(events_path: Path, chat_path: Path) -> None:
@@ -429,16 +429,26 @@ class SessionRegistry:
         default_project_root: Path,
     ):
         self.council_root = council_root
-        self.sessions_dir = council_root / "sessions"
+        self.default_project_root = normalize_project_root(default_project_root)
+        self.sessions_dir = self._project_sessions_dir(default_project_root)
+        self.legacy_sessions_dir = council_root / "sessions"
         self.registry_path = self.sessions_dir / "sessions.json"
         self.config = config
         self.config_path = config_path
-        self.default_project_root = default_project_root
         self.sessions: dict[str, Session] = {}
         self.active_session_id: str | None = None
 
+    def _project_sessions_dir(self, project_root: Path) -> Path:
+        try:
+            root = normalize_project_root(project_root)
+        except Exception:
+            logger.exception("Failed to resolve project root %s", project_root)
+            return self.council_root / "sessions"
+        return root / ".council" / "sessions"
+
     def load_all(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_project_sessions()
         registry = _json_default(
             self.registry_path,
             {"sessions": [], "active_session": None},
@@ -459,6 +469,77 @@ class SessionRegistry:
             session = self.create_session("default", self.default_project_root, activate=True)
             self.active_session_id = session.id
         self.save_registry()
+
+    def _migrate_legacy_project_sessions(self) -> None:
+        if self.legacy_sessions_dir == self.sessions_dir:
+            return
+
+        legacy_registry_path = self.legacy_sessions_dir / "sessions.json"
+        if not legacy_registry_path.exists():
+            return
+
+        legacy_registry = _json_default(
+            legacy_registry_path,
+            {"sessions": [], "active_session": None},
+        )
+        local_registry = _json_default(
+            self.registry_path,
+            {"sessions": [], "active_session": None},
+        )
+        local_sessions = local_registry.setdefault("sessions", [])
+        local_by_id = {
+            str(meta.get("id")): meta
+            for meta in local_sessions
+            if isinstance(meta, dict) and meta.get("id")
+        }
+
+        changed = False
+        migrated_active = None
+        for meta in legacy_registry.get("sessions", []):
+            if not isinstance(meta, dict) or not meta.get("id"):
+                continue
+            try:
+                project_root = normalize_project_root(
+                    meta.get("project_root") or self.default_project_root
+                )
+            except Exception:
+                continue
+            if project_root != self.default_project_root:
+                continue
+
+            session_id = str(meta["id"])
+            src = self.legacy_sessions_dir / session_id
+            dst = self.sessions_dir / session_id
+            local_meta = local_by_id.get(session_id)
+            legacy_last_used = str(meta.get("last_used_at") or "")
+            local_last_used = str(local_meta.get("last_used_at") or "") if local_meta else ""
+            if src.exists() and not dst.exists():
+                shutil.copytree(src, dst)
+                changed = True
+            elif src.exists() and legacy_last_used > local_last_used:
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                changed = True
+
+            if local_meta is None:
+                local_sessions.append(meta)
+                local_by_id[session_id] = meta
+                changed = True
+            elif legacy_last_used > local_last_used:
+                local_meta.clear()
+                local_meta.update(meta)
+                changed = True
+            if legacy_registry.get("active_session") == session_id:
+                migrated_active = session_id
+
+        if migrated_active and local_registry.get("active_session") != migrated_active:
+            local_registry["active_session"] = migrated_active
+            changed = True
+
+        if changed:
+            self.registry_path.write_text(
+                json.dumps(local_registry, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
     def _load_session(self, meta: dict) -> Session:
         session_id = str(meta["id"])

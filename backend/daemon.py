@@ -1,6 +1,7 @@
 """Daemon: watches each session chat.md for @mentions and dispatches agents."""
 
 import asyncio
+import json
 import re
 import logging
 from datetime import datetime
@@ -12,7 +13,7 @@ from .agent_memory import write_agent_memory
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
                             DispatchResult, estimate_tokens)
 from .summarizer import compact_chat
-from .mentions import find_first_mention, find_tail_mention, neutralize_agent_mentions
+from .mentions import find_agent_mentions, find_tail_mention, neutralize_agent_mentions
 
 logger = logging.getLogger(__name__)
 
@@ -46,22 +47,25 @@ def _get_model_deepseek(config: dict) -> str:
 def _parse_turns(text: str) -> list[dict]:
     turns = []
     current = None
+
+    def finish_current() -> None:
+        nonlocal current
+        if current is None:
+            return
+        current["body"] = re.sub(r"\n?---\s*$", "", current["body"])
+        turns.append(current)
+        current = None
+
     for line in text.splitlines():
         m = TURN_HEADER_RE.match(line)
         if m:
-            if current is not None:
-                turns.append(current)
+            finish_current()
             current = {"author": m.group(1), "header": line.strip(), "body": ""}
         elif current is not None:
-            if line.strip() == "---":
-                turns.append(current)
-                current = None
-            else:
-                if current["body"]:
-                    current["body"] += "\n"
-                current["body"] += line
-    if current is not None:
-        turns.append(current)
+            if current["body"]:
+                current["body"] += "\n"
+            current["body"] += line
+    finish_current()
     return turns
 
 
@@ -72,6 +76,70 @@ def _read_latest_turn_header(chat_path: Path) -> str:
     text = chat_path.read_text(encoding="utf-8", errors="replace")
     turns = _parse_turns(text)
     return turns[-1]["header"] if turns else ""
+
+
+def _find_header_index(turns: list[dict], header: str) -> int | None:
+    for i, turn in enumerate(turns):
+        if turn["header"] == header:
+            return i
+    return None
+
+
+def _mention_key(header: str, agent: str) -> str:
+    return f"{header}\t{agent}"
+
+
+def _load_dispatch_ledger(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to read dispatch ledger %s", path)
+        return set()
+    entries = data.get("dispatched") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return set()
+    return {str(entry) for entry in entries}
+
+
+def _save_dispatch_ledger(path: Path, dispatched: set[str]) -> None:
+    path.write_text(
+        json.dumps({"dispatched": sorted(dispatched)}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _turn_mentions(turn: dict) -> list[str]:
+    author = turn["author"]
+    if author == "you":
+        return find_agent_mentions(turn["body"])
+    if author in ("claude", "codex", "deepseek"):
+        mention = find_tail_mention(turn["body"])
+        return [mention] if mention else []
+    return []
+
+
+def _request_still_valid(chat_path: Path, request: dict[str, str]) -> bool:
+    if not chat_path.exists():
+        return False
+
+    text = chat_path.read_text(encoding="utf-8", errors="replace")
+    turns = _parse_turns(text)
+    if not turns:
+        return False
+
+    source = request["source"]
+    for turn in turns:
+        if turn["header"] != request["header"]:
+            continue
+        author = turn["author"]
+        if source == "user" and author != "you":
+            continue
+        if source == "agent" and author not in ("claude", "codex", "deepseek"):
+            continue
+        return request["agent"] in _turn_mentions(turn)
+    return False
 
 
 def _agent_timeout(config: dict, agent: str) -> int:
@@ -101,21 +169,28 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     chat_path = session.chat_path
 
     last_processed_header = _read_latest_turn_header(chat_path)
+    dispatch_ledger_path = session.session_dir / "dispatch-ledger.json"
+    dispatched_mentions = _load_dispatch_ledger(dispatch_ledger_path)
+    if chat_path.exists() and not dispatched_mentions:
+        text = chat_path.read_text(encoding="utf-8", errors="replace")
+        for turn in _parse_turns(text):
+            for agent in _turn_mentions(turn):
+                dispatched_mentions.add(_mention_key(turn["header"], agent))
+        _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
     pending_mentions: list[dict[str, str]] = []
     pending_changed = asyncio.Condition()
 
     async def enqueue_mention(agent: str, source: str, header: str) -> None:
         nonlocal pending_mentions
 
+        key = _mention_key(header, agent)
+        if key in dispatched_mentions:
+            return
+        dispatched_mentions.add(key)
+        _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
+
         async with pending_changed:
             if source == "user":
-                pending_mentions = [
-                    request for request in pending_mentions
-                    if not (
-                        request["agent"] == agent
-                        and request["source"] == "user"
-                    )
-                ]
                 pending_mentions.append({
                     "agent": agent,
                     "source": source,
@@ -123,11 +198,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 })
                 pending_changed.notify()
             else:
-                already_pending = any(
-                    request["agent"] == agent
-                    for request in pending_mentions
-                )
-                if already_pending or session.current_agent == agent:
+                if session.current_agent == agent:
                     return
                 pending_mentions.append({
                     "agent": agent,
@@ -155,22 +226,24 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
 
                     start_idx = 0
                     if last_processed_header:
-                        for i, t in enumerate(turns):
-                            if t["header"] == last_processed_header:
-                                start_idx = i + 1
-                                break
+                        header_idx = _find_header_index(turns, last_processed_header)
+                        if header_idx is None:
+                            start_idx = 0
+                            last_processed_header = ""
+                        else:
+                            start_idx = header_idx + 1
 
-                    for t in turns[start_idx:]:
-                        author = t["author"]
+                    for turn in turns[start_idx:]:
+                        author = turn["author"]
+                        source = None
                         if author == "you":
-                            mention = find_first_mention(t["body"])
-                            if mention:
-                                await enqueue_mention(mention, "user", t["header"])
+                            source = "user"
                         elif author in ("claude", "codex", "deepseek"):
-                            mention = find_tail_mention(t["body"])
-                            if mention:
-                                await enqueue_mention(mention, "agent", t["header"])
-                        last_processed_header = t["header"]
+                            source = "agent"
+                        if source:
+                            for mention in _turn_mentions(turn):
+                                await enqueue_mention(mention, source, turn["header"])
+                        last_processed_header = turn["header"]
 
             except Exception:
                 logger.exception("Watcher error")
@@ -181,6 +254,8 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         nonlocal last_processed_header
         while True:
             request = await next_mention()
+            if not _request_still_valid(chat_path, request):
+                continue
             mention = request["agent"]
             config = session.effective_config()
             max_chars = config["dispatch"]["max_prompt_chars"]

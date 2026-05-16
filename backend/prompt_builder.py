@@ -1,5 +1,6 @@
 """Prompt builder: assembles the full prompt for each dispatch."""
 
+import re
 from pathlib import Path
 from .agent_memory import read_agent_memory
 from .project import read_project_rules
@@ -104,9 +105,9 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = full
     else:
         snippet = full[-tail_limit:]
-        marker = snippet.find("\n---\n")
-        if marker != -1:
-            snippet = snippet[marker + 1:]
+        headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", snippet))
+        if headers:
+            snippet = snippet[headers[0].start():]
         chat_part = snippet
 
     if len(chat_part) < len(full):

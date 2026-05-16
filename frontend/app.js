@@ -95,6 +95,13 @@
     let current = null;
     let preamble = '';
 
+    function finishCurrent() {
+      if (!current) return;
+      current.body = current.body.replace(/\n?---\s*$/, '');
+      turns.push(current);
+      current = null;
+    }
+
     for (const line of lines) {
       const m = TURN_HEADER_RE.exec(line);
       if (m) {
@@ -102,22 +109,17 @@
           turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
           preamble = '';
         }
-        if (current) turns.push(current);
+        finishCurrent();
         current = { author: m[1], time: m[2], body: '' };
       } else if (current) {
-        if (line.trim() === '---') {
-          turns.push(current);
-          current = null;
-        } else {
-          if (current.body) current.body += '\n';
-          current.body += line;
-        }
+        if (current.body) current.body += '\n';
+        current.body += line;
       } else {
         if (preamble) preamble += '\n';
         preamble += line;
       }
     }
-    if (current) turns.push(current);
+    finishCurrent();
     if (turns.length === 0 && preamble.trim()) {
       turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
     }
@@ -338,6 +340,7 @@
       name.className = 'session-name';
       name.textContent = session.name || session.id;
       name.title = 'Double-click to rename';
+      name.addEventListener('click', (e) => e.stopPropagation());
       name.addEventListener('dblclick', (e) => {
         e.preventDefault();
         e.stopPropagation();

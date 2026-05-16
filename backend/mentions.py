@@ -3,8 +3,8 @@
 import re
 
 AGENTS = ("claude", "codex", "deepseek")
-TAIL_MENTION_RE = re.compile(r"@(" + "|".join(AGENTS) + r")\s*$")
-MENTION_RE = re.compile(r"@(" + "|".join(AGENTS) + r")")
+TAIL_MENTION_RE = re.compile(r"@(" + "|".join(AGENTS) + r")(?!\w)\s*$")
+MENTION_RE = re.compile(r"@(" + "|".join(AGENTS) + r")(?!\w)")
 
 
 def find_tail_mention(body: str) -> str | None:
@@ -21,6 +21,16 @@ def find_first_mention(body: str) -> str | None:
     """Return the first agent mention in a user-authored turn, if any."""
     match = MENTION_RE.search(body)
     return match.group(1) if match else None
+
+
+def find_agent_mentions(body: str) -> list[str]:
+    """Return distinct agent mentions in first-seen order."""
+    mentions: list[str] = []
+    for match in MENTION_RE.finditer(body):
+        agent = match.group(1)
+        if agent not in mentions:
+            mentions.append(agent)
+    return mentions
 
 
 def neutralize_agent_mentions(text: str) -> str:
