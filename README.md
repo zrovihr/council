@@ -1,6 +1,6 @@
 # Council App
 
-Local browser-based multi-agent chat. User talks to Claude, Codex, and Deepseek through Council-owned sessions. Each session has its own project root, chat transcript, event log, compaction records, and model/effort/role overrides.
+Local browser-based multi-agent chat. User talks to Claude, Codex, and Deepseek through Council-owned sessions stored project-locally under `<project>/.council/sessions/`. Each session has its own project root, chat transcript, event log, compaction records, and model/effort/role overrides.
 
 ## One-time Setup
 
@@ -20,19 +20,19 @@ Local browser-based multi-agent chat. User talks to Claude, Codex, and Deepseek 
 2. Type `council`
 3. Open the printed URL in your browser.
 4. Use the left rail to create, switch, or delete sessions.
-5. Type messages; use `@claude`, `@codex`, or `@deepseek` anywhere in the message when you want to activate that agent.
+5. Type messages; use `@claude`, `@codex`, or `@deepseek` anywhere in the message (outside Markdown code blocks) when you want to activate that agent.
 
 `@agent` is an activation command. To refer to an agent without summoning it, write the plain name, such as `deepseek`.
 
 ## Session Storage
 
-Council owns the session registry under:
+Council stores the session registry project-locally under:
 
 ```text
-<user-home>\Tools\council\sessions\
+<project>\.council\sessions\
 ```
 
-The registry lives in `sessions\sessions.json`. Each session directory contains `meta.json`, `state.json`, `events.jsonl`, `chat.md`, `compactions.jsonl`, and `chat-archive\`.
+The registry lives in `.council\sessions\sessions.json`. Each session directory contains `meta.json`, `state.json`, `events.jsonl`, `chat.md`, `compactions.jsonl`, and `chat-archive\`.
 
 `events.jsonl` is the durable structured log. `chat.md` is the human-readable rendered transcript used by the UI and dispatch prompt tail. Compaction snapshots and records stay inside the session directory.
 
@@ -40,7 +40,7 @@ The registry lives in `sessions\sessions.json`. Each session directory contains 
 
 `config.toml` stores global defaults. The Config panel edits the active session by default. Toggle `global defaults` when you want to patch `config.toml` instead.
 
-Missing or empty per-session values in `sessions\{id}\state.json` fall back to `config.toml`.
+Missing or empty per-session values in `.council\sessions\{id}\state.json` fall back to `config.toml`.
 
 ## Prerequisites
 

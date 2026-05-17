@@ -1134,6 +1134,120 @@ body {
   background: #b91c1c;
 }
 
+/* ---- Help Button ---- */
+
+#help-btn {
+  background: #1e293b;
+  color: #60a5fa;
+  border: 1px solid rgba(96,165,250,0.35);
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: var(--mono);
+  cursor: pointer;
+  line-height: 1;
+}
+#help-btn:hover {
+  border-color: #60a5fa;
+  color: #93c5fd;
+  background: #1e3a5f;
+}
+
+/* ---- Help Modal ---- */
+
+#help-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 230;
+  padding: 24px;
+}
+#help-overlay.hidden {
+  display: none;
+}
+
+#help-box {
+  background: #1c1c1f;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 36px rgba(0,0,0,0.65);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: min(700px, 85vh);
+  max-width: min(680px, 92vw);
+  padding: 0;
+  width: 680px;
+}
+
+#help-title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+#help-body {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.65;
+  padding: 16px 20px 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+#help-body h4 {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  margin: 14px 0 6px;
+}
+#help-body h4:first-child {
+  margin-top: 0;
+}
+#help-body p {
+  margin: 0 0 8px;
+}
+#help-body code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(255,255,255,0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+#help-body strong {
+  color: var(--text);
+}
+
+#help-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+}
+
+#help-close-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #111113;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 7px 22px;
+}
+#help-close-btn:hover {
+  opacity: 0.9;
+}
+
 /* ---- Edit Modal ---- */
 
 #edit-overlay {

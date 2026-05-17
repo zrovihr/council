@@ -38,6 +38,7 @@
         <div id="queue-menu" class="hidden"></div>
       </div>
       <button id="cancel-btn" class="hidden" title="Stop active agent">Cancel</button>
+      <button id="help-btn" title="About Council">?</button>
       <button id="compact-btn" title="Summarize chat log">/compact</button>
       <button id="erase-btn" title="Clear chat log">/clear</button>
     </header>
@@ -75,6 +76,35 @@
     <div id="confirm-actions">
       <button id="confirm-yes-btn">Yes</button>
       <button id="confirm-no-btn">No</button>
+    </div>
+  </div>
+</div>
+<div id="help-overlay" class="hidden">
+  <div id="help-box">
+    <div id="help-title">About Council</div>
+    <div id="help-body">
+      <h4>What is Council?</h4>
+      <p>Council is a local multi-agent chat orchestrator. You talk to Claude, Codex, and Deepseek in a shared conversation. Each agent runs as a subprocess on your machine with filesystem access to your project. Mention an agent with <code>@claude</code>, <code>@codex</code>, or <code>@deepseek</code> to dispatch them &mdash; plain names without <code>@</code> are just references.</p>
+
+      <h4>Agent roles</h4>
+      <p><code>@claude</code> &mdash; primary reasoning and planning. Good for architecture, debugging, and complex tasks.</p>
+      <p><code>@codex</code> &mdash; fast implementation and refactoring. Excels at writing and editing code.</p>
+      <p><code>@deepseek</code> &mdash; bounded analysis and support tasks. Handles research, verification, and small fixes.</p>
+
+      <h4>Memory separation</h4>
+      <p>Each agent has its own <strong>private effort memory</strong> stored under <code>agent-memory/&lt;agent&gt;/</code>. This memory is visible only to that agent across runs &mdash; it contains partial work, prior output, and continuity notes. The shared chat log (<code>chat.md</code>) is the single source of truth for decisions visible to everyone. Agents also receive project context from your <code>AGENTS.md</code> or <code>CLAUDE.md</code>.</p>
+
+      <h4>Compaction</h4>
+      <p>When the chat grows long, click <code>/compact</code> (or it triggers automatically at a token threshold). A summarizer agent condenses earlier turns into a compact summary, keeping only recent turns in full. This saves tokens and keeps agents focused. The full archive is preserved in <code>chat-archive/</code>.</p>
+
+      <h4>Sessions</h4>
+      <p>Each session has its own project root, chat log, agent memories, and config overrides. Switch sessions from the left rail. They run independently &mdash; no data is mixed across sessions.</p>
+
+      <h4>Dispatch queue</h4>
+      <p>When multiple agents are mentioned, they queue up. Use the <strong>Queue</strong> dropdown in the top bar to see who's running or queued, and cancel individual dispatches. The <strong>Cancel</strong> button stops the currently running agent.</p>
+    </div>
+    <div id="help-actions">
+      <button id="help-close-btn">Got it</button>
     </div>
   </div>
 </div>

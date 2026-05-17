@@ -37,6 +37,9 @@
   const editError = document.getElementById('edit-error');
   const editSaveBtn = document.getElementById('edit-save-btn');
   const editCancelBtn = document.getElementById('edit-cancel-btn');
+  const helpBtn = document.getElementById('help-btn');
+  const helpOverlay = document.getElementById('help-overlay');
+  const helpCloseBtn = document.getElementById('help-close-btn');
 
   let userScrolledUp = false;
   let isRenderingChat = false;
@@ -1280,6 +1283,20 @@
     if (e.key === 'Escape') {
       e.preventDefault();
       cancelEditTurn();
+    }
+  });
+  helpBtn.addEventListener('click', () => {
+    helpOverlay.classList.remove('hidden');
+  });
+  helpCloseBtn.addEventListener('click', () => {
+    helpOverlay.classList.add('hidden');
+  });
+  helpOverlay.addEventListener('click', (e) => {
+    if (e.target === helpOverlay) helpOverlay.classList.add('hidden');
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
+      helpOverlay.classList.add('hidden');
     }
   });
   configToggleBtn.addEventListener('click', () => {
