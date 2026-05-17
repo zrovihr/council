@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 OPENCODE_HEADER_RE = re.compile(r"^>\s+\S+\s+.*deepseek", re.IGNORECASE)
+OPENCODE_FILE_DONE_RE = re.compile(
+    r"^Done\..*Written to .*(?:council|prompt).*\.(?:md|txt)(?:\.compacted)?\.?$",
+    re.IGNORECASE,
+)
 TASKKILL_SUCCESS_RE = re.compile(
     r"^SUCCESS:\s+The process with PID \d+ "
     r"\(child process of PID \d+\) has been terminated\.\s*$"
@@ -72,6 +76,31 @@ def _strip_opencode_header(text: str) -> str:
         if not OPENCODE_HEADER_RE.match(line.strip())
     ]
     return "\n".join(lines)
+
+
+def _opencode_stdout_is_file_status(text: str) -> bool:
+    cleaned = _strip_opencode_header(_strip_ansi(text))
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    return bool(lines) and all(OPENCODE_FILE_DONE_RE.match(line) for line in lines)
+
+
+def _read_opencode_file_output(
+    stdout: str,
+    prompt_path: Path,
+    original_body: str,
+) -> str:
+    """Return file output when opencode writes there instead of stdout."""
+    if not _opencode_stdout_is_file_status(stdout):
+        return stdout
+
+    candidates = [Path(str(prompt_path) + ".compacted"), prompt_path]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        content = candidate.read_text(encoding="utf-8", errors="replace").strip()
+        if content and content != original_body.strip():
+            return content
+    return stdout
 
 
 def _sanitize_agent_output(text: str, strip_thinking: bool = False) -> str:
@@ -170,9 +199,10 @@ async def _run_opencode_with_prompt_file(
             timeout,
             on_output=on_output,
         )
-        return stdout
+        return _read_opencode_file_output(stdout, prompt_path, file_body)
     finally:
         prompt_path.unlink(missing_ok=True)
+        Path(str(prompt_path) + ".compacted").unlink(missing_ok=True)
 
 
 async def _read_stream(
@@ -369,8 +399,8 @@ async def dispatch_claude(prompt: str, project_root: Path,
                           model: str = "",
                           effort: str = "",
                           on_output: Callable[[str, str], Awaitable[None]] | None = None) -> DispatchResult:
-    argv = [_resolve(binary), "--dangerously-skip-permissions", "--add-dir",
-            str(COUNCIL_ROOT)]
+    argv = [_resolve(binary), "--dangerously-skip-permissions",
+            "--no-session-persistence", "--add-dir", str(COUNCIL_ROOT)]
     if model:
         argv.extend(["--model", model])
     if effort:

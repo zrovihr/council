@@ -5,6 +5,7 @@
   const chatArea = document.getElementById('chat-area');
   const traceList = document.getElementById('trace-list');
   const msgInput = document.getElementById('msg-input');
+  const sendNowBtn = document.getElementById('send-now-btn');
   const sendBtn = document.getElementById('send-btn');
   const agentButtons = document.querySelectorAll('.agent-btn');
   const compactBtn = document.getElementById('compact-btn');
@@ -47,9 +48,14 @@
   let wsSessionId = null;
   let latestAgents = {};
   let latestGlobalAgents = {};
+  let latestDispatch = {};
+  let latestGlobalDispatch = {};
+  let latestStatus = null;
+  let latestTraceEvents = [];
   let sessions = [];
   let activeSessionId = null;
   let editState = null;
+  let openTurnMenu = null;
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -180,6 +186,15 @@
       header.appendChild(timeSpan);
 
       const td = tokenData && tokenData[turnIdx];
+      if (td && td.metadata && td.metadata.dispatch_mode) {
+        const modeBadge = document.createElement('span');
+        modeBadge.className = `turn-mode-badge ${td.metadata.dispatch_mode}`;
+        modeBadge.textContent = td.metadata.dispatch_mode === 'queued' ? 'Queued' : 'Live';
+        modeBadge.title = td.metadata.dispatch_mode === 'queued'
+          ? 'Mentioned agents were queued behind earlier work.'
+          : 'Mentioned agents were started immediately when possible.';
+        header.appendChild(modeBadge);
+      }
       if (td) {
         const inTok = formatTokenCount(td.prompt_tokens_est);
         const outTok = formatTokenCount(td.response_tokens_est);
@@ -208,10 +223,45 @@
         editBtn.title = 'Edit this message';
         editBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          startEditTurn(card, body, turnIdx, turn.body);
+          startEditTurn(turn, turnIdx);
         });
         header.appendChild(editBtn);
       }
+
+      const moreWrap = document.createElement('div');
+      moreWrap.className = 'turn-more-wrap';
+      const moreBtn = document.createElement('button');
+      moreBtn.className = 'turn-more-btn';
+      moreBtn.textContent = '\u22EF';
+      moreBtn.title = 'More message options';
+      moreBtn.setAttribute('aria-label', 'More message options');
+      const moreMenu = document.createElement('div');
+      moreMenu.className = 'turn-more-menu hidden';
+      const copyMetadataBtn = document.createElement('button');
+      copyMetadataBtn.type = 'button';
+      copyMetadataBtn.textContent = 'Copy chat metadata';
+      copyMetadataBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await copyTurnMetadata(turn, turnIdx, tokenData && tokenData[turnIdx], turns.length);
+        copyMetadataBtn.textContent = 'Copied';
+        setTimeout(() => {
+          copyMetadataBtn.textContent = 'Copy chat metadata';
+        }, 1200);
+        moreMenu.classList.add('hidden');
+        openTurnMenu = null;
+      });
+      moreMenu.appendChild(copyMetadataBtn);
+      moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (openTurnMenu && openTurnMenu !== moreMenu) {
+          openTurnMenu.classList.add('hidden');
+        }
+        moreMenu.classList.toggle('hidden');
+        openTurnMenu = moreMenu.classList.contains('hidden') ? null : moreMenu;
+      });
+      moreWrap.appendChild(moreBtn);
+      moreWrap.appendChild(moreMenu);
+      header.appendChild(moreWrap);
 
       const eraseBtn = document.createElement('button');
       eraseBtn.className = 'turn-erase-btn';
@@ -219,7 +269,7 @@
       eraseBtn.title = 'Erase this message';
       eraseBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        eraseTurn(turnIdx);
+        eraseTurn(turn, turnIdx);
       });
       header.appendChild(eraseBtn);
 
@@ -249,6 +299,81 @@
     requestAnimationFrame(() => {
       isRenderingChat = false;
     });
+  }
+
+  function agentMentions(text) {
+    const matches = [];
+    const seen = new Set();
+    const withoutCodeBlocks = String(text || '').replace(/```[\s\S]*?```/g, ' ');
+    const withoutInlineCode = withoutCodeBlocks.replace(/`[^`\n]*`/g, ' ');
+    for (const match of withoutInlineCode.matchAll(/@(claude|codex|deepseek)\b/g)) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1]);
+        matches.push(match[1]);
+      }
+    }
+    return matches;
+  }
+
+  function buildTurnMetadata(turn, turnIdx, tokenInfo, totalTurns) {
+    const session = activeSession();
+    const status = latestStatus || {};
+    const body = turn.body || '';
+    return {
+      copied_at: new Date().toISOString(),
+      session: session ? {
+        id: session.id,
+        name: session.name,
+        project_root: session.project_root,
+      } : { id: activeSessionId },
+      turn: {
+        index: turnIdx,
+        total_turns: totalTurns,
+        author: turn.author,
+        display_time: turn.time,
+        body_chars: body.length,
+        body_lines: body ? body.split('\n').length : 0,
+        activation_mentions: agentMentions(body),
+      },
+      event_metadata: tokenInfo ? {
+        dispatch_mode: tokenInfo.metadata && tokenInfo.metadata.dispatch_mode || null,
+        prompt_tokens_est: tokenInfo.prompt_tokens_est || null,
+        response_tokens_est: tokenInfo.response_tokens_est || null,
+        token_usage: tokenInfo.token_usage || null,
+        raw_metadata: tokenInfo.metadata || {},
+      } : null,
+      dispatch_state: {
+        busy: Boolean(status.busy),
+        current_agent: status.current_agent || status.agent || null,
+        current_dispatch: status.current_dispatch || null,
+        active_dispatches: status.active_dispatches || [],
+        dispatch_queue: status.dispatch_queue || [],
+      },
+      recent_trace: latestTraceEvents.slice(-10),
+      agents: status.agents || latestAgents || {},
+      note: 'Metadata only; message body is summarized by length and mentions, not copied.',
+    };
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+
+  async function copyTurnMetadata(turn, turnIdx, tokenInfo, totalTurns) {
+    const metadata = buildTurnMetadata(turn, turnIdx, tokenInfo, totalTurns);
+    await copyText(JSON.stringify(metadata, null, 2));
   }
 
   function colorMentions(container) {
@@ -541,7 +666,8 @@
         const eventsData = await eventsRes.json();
         const td = {};
         eventsData.turns.forEach((evt, i) => {
-          if (evt.prompt_tokens_est || evt.response_tokens_est) {
+          const meta = evt.metadata || {};
+          if (evt.prompt_tokens_est || evt.response_tokens_est || meta.dispatch_mode) {
             td[i] = evt;
           }
         });
@@ -553,7 +679,7 @@
     }
   }
 
-  async function sendMessage() {
+  async function sendMessage(dispatchMode = 'parallel') {
     if (!activeSessionId) return;
     const text = msgInput.value.trim();
     if (!text) return;
@@ -573,7 +699,7 @@
       const res = await fetch(sessionApi('/send'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, dispatch_mode: dispatchMode }),
       });
       if (!res.ok) {
         const err = await res.json();
@@ -630,11 +756,20 @@
     );
   }
 
-  async function startEditTurn(card, body, turnIdx, originalText) {
+  function turnIdentity(turn, turnIdx) {
+    return {
+      index: turnIdx,
+      author: turn.author,
+      display_ts: turn.time,
+      original_text: turn.body || '',
+    };
+  }
+
+  async function startEditTurn(turn, turnIdx) {
     if (isRenderingChat) return;
-    editState = { turnIdx };
+    editState = turnIdentity(turn, turnIdx);
     editError.textContent = '';
-    editTextarea.value = originalText;
+    editTextarea.value = turn.body || '';
     editOverlay.classList.remove('hidden');
     editTextarea.focus();
     editTextarea.setSelectionRange(editTextarea.value.length, editTextarea.value.length);
@@ -648,7 +783,6 @@
 
   async function saveEditTurn() {
     if (!activeSessionId || !editState) return;
-    const turnIdx = editState.turnIdx;
     const newText = editTextarea.value;
     editSaveBtn.disabled = true;
     editError.textContent = '';
@@ -656,7 +790,7 @@
       const res = await fetch(sessionApi('/edit_turn'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ index: turnIdx, text: newText }),
+        body: JSON.stringify({ ...editState, text: newText }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -673,7 +807,7 @@
     }
   }
 
-  async function eraseTurn(turnIdx) {
+  async function eraseTurn(turn, turnIdx) {
     if (!activeSessionId) return;
     showConfirm(
       'Erase message?',
@@ -683,7 +817,7 @@
           await fetch(sessionApi('/erase_turn'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ index: turnIdx }),
+            body: JSON.stringify(turnIdentity(turn, turnIdx)),
           });
           await fetchChat();
         } catch (e) {
@@ -755,6 +889,7 @@
       const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/status`);
       const data = await res.json();
       if (targetSessionId !== activeSessionId) return;
+      latestStatus = data;
       updateStatus(data);
     } catch (_) {}
   }
@@ -791,7 +926,8 @@
       const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/trace`);
       const data = await res.json();
       if (targetSessionId !== activeSessionId) return;
-      renderTrace(data.events || []);
+      latestTraceEvents = data.events || [];
+      renderTrace(latestTraceEvents);
     } catch (_) {}
   }
 
@@ -864,9 +1000,13 @@
         if (msg.type === 'chat_update') {
           fetchChat();
         } else if (msg.type === 'status') {
+          latestStatus = msg;
           updateStatus(msg);
         } else if (msg.type === 'trace_update') {
-          appendTraceEvent(msg.event || {});
+          const traceEvent = msg.event || {};
+          latestTraceEvents.push(traceEvent);
+          latestTraceEvents = latestTraceEvents.slice(-100);
+          appendTraceEvent(traceEvent);
         } else if (msg.type === 'error') {
           console.error('Server error:', msg.msg);
         }
@@ -893,8 +1033,10 @@
     }
     latestAgents = data.agents || {};
     latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
+    latestDispatch = data.dispatch || {};
+    latestGlobalDispatch = data.global_dispatch || latestGlobalDispatch || {};
     renderAgentModels(latestAgents);
-    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
     renderQueueStatus(data);
 
     if (data.busy) {
@@ -902,6 +1044,8 @@
       const agentName = data.agent || '?';
       if (agentName === 'summarizer') {
         statusIndicator.innerHTML = '&#9679; compacting&hellip;';
+      } else if (agentName === 'multiple') {
+        statusIndicator.innerHTML = '&#9679; agents thinking&hellip;';
       } else {
         statusIndicator.innerHTML = '&#9679; @' + agentName + ' thinking&hellip;';
       }
@@ -920,9 +1064,11 @@
   }
 
   function renderQueueStatus(data) {
-    const current = data.current_dispatch || null;
+    const active = data.active_dispatches || [];
+    const current = data.current_dispatch || active[0] || null;
     const queue = data.dispatch_queue || [];
-    const total = (current ? 1 : 0) + queue.length;
+    const running = active.length || (current ? 1 : 0);
+    const total = running + queue.length;
     if (!total) {
       queueBtn.classList.add('hidden');
       queueMenu.classList.add('hidden');
@@ -933,7 +1079,11 @@
     queueBtn.textContent = queue.length ? `Queue ${total}` : 'Queue 1';
     queueMenu.innerHTML = '';
 
-    if (current) {
+    if (active.length) {
+      active.forEach((item, idx) => {
+        queueMenu.appendChild(makeQueueItem(item, active.length > 1 ? `Running ${idx + 1}` : 'Running'));
+      });
+    } else if (current) {
       queueMenu.appendChild(makeQueueItem(current, 'Running'));
     }
     queue.forEach((item, idx) => {
@@ -1014,7 +1164,7 @@
     return select;
   }
 
-  function renderConfig(agents) {
+  function renderConfig(agents, dispatchCfg) {
     if (configPanel.classList.contains('hidden')) return;
     const order = ['claude', 'codex', 'deepseek'];
     configGrid.innerHTML = '';
@@ -1054,6 +1204,29 @@
       row.appendChild(roleWrap);
       configGrid.appendChild(row);
     }
+
+    const dispatchSection = document.createElement('div');
+    dispatchSection.className = 'config-section';
+    const dispatchLabel = document.createElement('div');
+    dispatchLabel.className = 'config-section-label';
+    dispatchLabel.textContent = 'Dispatch limits';
+    dispatchSection.appendChild(dispatchLabel);
+
+    const dispatchKeys = ['chain_depth_limit', 'timeout_seconds', 'max_prompt_chars'];
+    for (const key of dispatchKeys) {
+      const wrap = document.createElement('label');
+      wrap.textContent = key;
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '0';
+      input.value = dispatchCfg && dispatchCfg[key] !== undefined ? dispatchCfg[key] : '';
+      input.addEventListener('change', () => {
+        patchConfig({ dispatch: { [key]: input.value } });
+      });
+      wrap.appendChild(input);
+      dispatchSection.appendChild(wrap);
+    }
+    configGrid.appendChild(dispatchSection);
   }
 
   const acBox = document.createElement('div');
@@ -1258,11 +1431,12 @@
     }
     if (e.ctrlKey && e.key === 'Enter') {
       e.preventDefault();
-      sendMessage();
+      sendMessage('queued');
     }
   });
 
-  sendBtn.addEventListener('click', sendMessage);
+  sendNowBtn.addEventListener('click', () => sendMessage('parallel'));
+  sendBtn.addEventListener('click', () => sendMessage('queued'));
   compactBtn.addEventListener('click', compactChat);
   eraseBtn.addEventListener('click', eraseChat);
   cancelBtn.addEventListener('click', cancelDispatch);
@@ -1273,6 +1447,10 @@
   document.addEventListener('click', (e) => {
     if (!queueMenu.classList.contains('hidden') && !e.target.closest('#queue-menu-wrap')) {
       queueMenu.classList.add('hidden');
+    }
+    if (openTurnMenu && !e.target.closest('.turn-more-wrap')) {
+      openTurnMenu.classList.add('hidden');
+      openTurnMenu = null;
     }
   });
   editSaveBtn.addEventListener('click', saveEditTurn);
@@ -1303,13 +1481,17 @@
     if (e.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
       helpOverlay.classList.add('hidden');
     }
+    if (e.key === 'Escape' && openTurnMenu) {
+      openTurnMenu.classList.add('hidden');
+      openTurnMenu = null;
+    }
   });
   configToggleBtn.addEventListener('click', () => {
     configPanel.classList.toggle('hidden');
-    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
   });
   globalConfigCheckbox.addEventListener('change', () => {
-    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents);
+    renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
   });
   agentButtons.forEach((btn) => {
     btn.addEventListener('click', () => {

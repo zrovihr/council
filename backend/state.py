@@ -14,7 +14,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek")
-STATE_SECTIONS = ("models", "effort", "roles")
+STATE_SECTIONS = ("models", "effort", "roles", "dispatch")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -232,6 +232,8 @@ class Session:
     current_agent: Optional[str] = None
     current_dispatch: Optional[dict] = None
     current_dispatch_task: Optional[asyncio.Task] = None
+    active_dispatches: list[dict] = field(default_factory=list)
+    active_dispatch_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
     dispatch_queue: list[dict] = field(default_factory=list)
     trace_events: list[dict] = field(default_factory=list)
     subscribers: list = field(default_factory=list)
@@ -345,11 +347,15 @@ class Session:
             "agent": self.current_agent,
             "current_agent": self.current_agent,
             "current_dispatch": self.current_dispatch,
+            "active_dispatches": self.active_dispatches_snapshot(),
             "dispatch_queue": self.dispatch_queue_snapshot(),
             "project": self.project_name,
             "session_id": self.id,
             "agents": build_agent_info(self.config, self.state),
         })
+
+    def active_dispatches_snapshot(self) -> list[dict]:
+        return [item.copy() for item in self.active_dispatches]
 
     def dispatch_queue_snapshot(self) -> list[dict]:
         return [item.copy() for item in self.dispatch_queue]
@@ -362,7 +368,55 @@ class Session:
         self.current_dispatch = request.copy() if request else None
         await self.broadcast_status()
 
+    async def start_dispatch(self, request: dict, task: asyncio.Task) -> None:
+        request_id = request.get("id")
+        if not request_id:
+            return
+        clean = request.copy()
+        self.active_dispatches = [
+            item for item in self.active_dispatches
+            if item.get("id") != request_id
+        ]
+        self.active_dispatches.append(clean)
+        self.active_dispatch_tasks[request_id] = task
+        self.current_dispatch = self.active_dispatches[0] if self.active_dispatches else None
+        if len(self.active_dispatches) == 1:
+            self.current_agent = clean.get("agent")
+        elif self.active_dispatches:
+            self.current_agent = "multiple"
+        self.busy = True
+        await self.broadcast_status()
+
+    async def finish_dispatch(self, request_id: str) -> None:
+        self.active_dispatch_tasks.pop(request_id, None)
+        self.active_dispatches = [
+            item for item in self.active_dispatches
+            if item.get("id") != request_id
+        ]
+        self.current_dispatch = self.active_dispatches[0] if self.active_dispatches else None
+        if len(self.active_dispatches) == 1:
+            self.current_agent = self.active_dispatches[0].get("agent")
+        elif self.active_dispatches:
+            self.current_agent = "multiple"
+        else:
+            self.current_agent = None
+            self.busy = False
+        await self.broadcast_status()
+
     async def cancel_dispatch_request(self, request_id: str) -> bool:
+        task = self.active_dispatch_tasks.get(request_id)
+        if task is not None and not task.done():
+            agent = next(
+                (
+                    item.get("agent") or "system"
+                    for item in self.active_dispatches
+                    if item.get("id") == request_id
+                ),
+                "system",
+            )
+            await self.add_trace(agent, "cancel requested", "Stopping active agent subprocess.")
+            task.cancel()
+            return True
         if self.current_dispatch and self.current_dispatch.get("id") == request_id:
             return await self.cancel_current_dispatch()
         for i, item in enumerate(self.dispatch_queue):
@@ -383,6 +437,15 @@ class Session:
         await self.broadcast_status()
 
     async def set_idle(self):
+        if self.active_dispatches:
+            self.busy = True
+            self.current_dispatch = self.active_dispatches[0]
+            self.current_agent = (
+                self.active_dispatches[0].get("agent")
+                if len(self.active_dispatches) == 1 else "multiple"
+            )
+            await self.broadcast_status()
+            return
         self.busy = False
         self.current_agent = None
         self.current_dispatch = None
@@ -392,6 +455,13 @@ class Session:
         self.current_dispatch_task = task
 
     async def cancel_current_dispatch(self) -> bool:
+        if self.current_dispatch:
+            task = self.active_dispatch_tasks.get(self.current_dispatch.get("id"))
+            if task is not None and not task.done():
+                agent = self.current_dispatch.get("agent") or "system"
+                await self.add_trace(agent, "cancel requested", "Stopping active agent subprocess.")
+                task.cancel()
+                return True
         task = self.current_dispatch_task
         if task is None or task.done():
             return False
@@ -427,7 +497,7 @@ class Session:
                 continue
             target = self.state.setdefault(section, {})
             for key, value in section_changes.items():
-                if key not in AGENTS:
+                if section != "dispatch" and key not in AGENTS:
                     continue
                 target[key] = str(value)
         self.save_state()

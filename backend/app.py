@@ -21,6 +21,7 @@ from .completions import list_agents, list_project_files
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+TURN_KINDS = {"user_turn", "agent_turn", "system_turn"}
 
 
 def _get_session(registry: SessionRegistry, session_id: str) -> Session:
@@ -31,12 +32,47 @@ def _get_session(registry: SessionRegistry, session_id: str) -> Session:
 
 
 def _allowed_config_changes(body: dict) -> dict:
-    allowed_sections = {"models", "effort", "roles"}
+    allowed_sections = {"models", "effort", "roles", "dispatch"}
     return {
         section: value
         for section, value in body.items()
         if section in allowed_sections and isinstance(value, dict)
     }
+
+
+def _load_event_lines(session: Session) -> tuple[list[str], list[tuple[int, dict]]]:
+    lines = session.events_path.read_text(encoding="utf-8").splitlines()
+    turns: list[tuple[int, dict]] = []
+    for line_idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") in TURN_KINDS:
+            turns.append((line_idx, event))
+    return lines, turns
+
+
+def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
+    author = body.get("author")
+    display_ts = body.get("display_ts")
+    original_text = body.get("original_text")
+
+    if isinstance(author, str) and isinstance(display_ts, str) and isinstance(original_text, str):
+        for line_idx, event in turns:
+            if (
+                event.get("author") == author
+                and event.get("display_ts") == display_ts
+                and (event.get("text") or "") == original_text.rstrip()
+            ):
+                return line_idx
+
+    turn_index = body.get("index")
+    if isinstance(turn_index, int) and 0 <= turn_index < len(turns):
+        return turns[turn_index][0]
+    return None
 
 
 async def _stop_task(task: asyncio.Task | None) -> None:
@@ -163,7 +199,10 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         text = str(body.get("text", ""))
         if not text.strip():
             return JSONResponse({"error": "empty message"}, status_code=400)
-        session.append_turn("you", text)
+        dispatch_mode = str(body.get("dispatch_mode") or "parallel").lower()
+        if dispatch_mode not in ("parallel", "queued"):
+            return JSONResponse({"error": "invalid dispatch_mode"}, status_code=400)
+        session.append_turn("you", text, metadata={"dispatch_mode": dispatch_mode})
         await session.notify_chat_update()
         return {"ok": True}
 
@@ -194,22 +233,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         turn_index = body.get("index")
         if not isinstance(turn_index, int) or turn_index < 0:
             return JSONResponse({"error": "invalid turn index"}, status_code=400)
-        lines = session.events_path.read_text(encoding="utf-8").splitlines()
-        turn_kinds = {"user_turn", "agent_turn", "system_turn"}
-        turn_count = -1
-        target_idx = None
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("kind") in turn_kinds:
-                turn_count += 1
-                if turn_count == turn_index:
-                    target_idx = i
-                    break
+        lines, turns = _load_event_lines(session)
+        target_idx = _find_turn_line(body, turns)
         if target_idx is None:
             return JSONResponse({"error": "turn not found"}, status_code=404)
         del lines[target_idx]
@@ -228,27 +253,13 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             return JSONResponse({"error": "invalid turn index"}, status_code=400)
         if not isinstance(new_text, str):
             return JSONResponse({"error": "text is required"}, status_code=400)
-        lines = session.events_path.read_text(encoding="utf-8").splitlines()
-        turn_kinds = {"user_turn", "agent_turn", "system_turn"}
-        turn_count = -1
-        target_idx = None
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("kind") in turn_kinds:
-                turn_count += 1
-                if turn_count == turn_index:
-                    target_idx = i
-                    break
+        lines, turns = _load_event_lines(session)
+        target_idx = _find_turn_line(body, turns)
         if target_idx is None:
             return JSONResponse({"error": "turn not found"}, status_code=404)
         event = json.loads(lines[target_idx])
         if event.get("author") != "you":
-            return JSONResponse({"error": "only @you turns can be edited"}, status_code=403)
+            return JSONResponse({"error": "only your own turns can be edited"}, status_code=403)
         event["text"] = new_text
         lines[target_idx] = json.dumps(event, ensure_ascii=True)
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -364,11 +375,14 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "current_agent": session.current_agent,
             "agent": session.current_agent,
             "current_dispatch": session.current_dispatch,
+            "active_dispatches": session.active_dispatches_snapshot(),
             "dispatch_queue": session.dispatch_queue_snapshot(),
             "project": session.project_name,
             "session": session.metadata(),
             "agents": build_agent_info(registry.config, session.state),
             "global_agents": build_agent_info(registry.config),
+            "dispatch": session.effective_config().get("dispatch", {}),
+            "global_dispatch": registry.config.get("dispatch", {}),
         }
 
     @app.get("/api/sessions/{session_id}/trace")

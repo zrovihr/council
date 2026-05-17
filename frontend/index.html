@@ -61,7 +61,10 @@
         <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
       </div>
       <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use plain names when not summoning."></textarea>
-      <button id="send-btn">Send</button>
+      <div id="send-actions">
+        <button id="send-now-btn" title="Send and start mentioned agents immediately">Send</button>
+        <button id="send-btn" title="Queue (Ctrl+Enter)">Queue</button>
+      </div>
     </footer>
   </section>
   <aside id="trace-panel">
@@ -101,7 +104,7 @@
       <p>Each session has its own project root, chat log, agent memories, and config overrides. Switch sessions from the left rail. They run independently &mdash; no data is mixed across sessions.</p>
 
       <h4>Dispatch queue</h4>
-      <p>When multiple agents are mentioned, they queue up. Use the <strong>Queue</strong> dropdown in the top bar to see who's running or queued, and cancel individual dispatches. The <strong>Cancel</strong> button stops the currently running agent.</p>
+      <p><strong>Send</strong> starts mentioned agents immediately, so separate requests can run at the same time. <strong>Queue</strong> sends the message but waits behind current work. Use the <strong>Queue</strong> dropdown in the top bar to see running and queued agents, and cancel individual dispatches.</p>
     </div>
     <div id="help-actions">
       <button id="help-close-btn">Got it</button>

@@ -215,7 +215,7 @@ async def _summarize(full_text: str, config: dict) -> str:
         "Transcript:\n" + full_text
     )
 
-    timeout = config.get("dispatch", {}).get("timeout_seconds", 300)
+    timeout = int(config.get("dispatch", {}).get("timeout_seconds", 300))
     flash_model = config.get("models", {}).get(
         "deepseek_flash", "deepseek/deepseek-v4-flash"
     )
@@ -249,7 +249,7 @@ async def _summarize_agent_memory(agent: str, memory_text: str, config: dict) ->
         "Private memory:\n" + memory_text
     )
 
-    timeout = config.get("dispatch", {}).get("timeout_seconds", 300)
+    timeout = int(config.get("dispatch", {}).get("timeout_seconds", 300))
     flash_model = config.get("models", {}).get(
         "deepseek_flash", "deepseek/deepseek-v4-flash"
     )
