@@ -814,9 +814,14 @@
     const item = document.createElement('div');
     item.className = 'trace-item';
 
+    const agent = event.agent || 'system';
     const meta = document.createElement('div');
     meta.className = 'trace-meta';
-    meta.textContent = `${event.time || ''} @${event.agent || 'system'}`;
+    meta.textContent = `${event.time || ''} `;
+    const agentSpan = document.createElement('span');
+    agentSpan.className = `trace-agent ${agent}`;
+    agentSpan.textContent = `@${agent}`;
+    meta.appendChild(agentSpan);
 
     const message = document.createElement('div');
     message.className = 'trace-message';

@@ -256,6 +256,30 @@ body {
   font-size: 11px;
 }
 
+.trace-agent.claude {
+  color: var(--claude);
+}
+
+.trace-agent.codex {
+  color: var(--codex);
+}
+
+.trace-agent.deepseek {
+  color: var(--deepseek);
+}
+
+.trace-agent.you {
+  color: var(--you);
+}
+
+.trace-agent.system {
+  color: var(--system);
+}
+
+.trace-agent.summarizer {
+  color: var(--summarizer);
+}
+
 .trace-message {
   color: var(--text);
   font-size: 12px;
