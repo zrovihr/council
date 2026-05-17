@@ -200,6 +200,10 @@ def _clean_summary(summary: str) -> str:
 
 async def _summarize(full_text: str, config: dict) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    agent_lines = "\n".join(
+        f"  - {a.title()}: <one sentence summarizing what {a.title()} did, or 'Did not participate'>"
+        for a in AGENTS
+    )
     prompt = (
         "Summarize this chat transcript for an LLM that will continue the conversation. "
         "Output format EXACTLY:\n\n"
@@ -209,6 +213,10 @@ async def _summarize(full_text: str, config: dict) -> str:
         "- Open threads: <bullets, including any pending @mention preserved verbatim>\n"
         "- Files touched recently: <list>\n"
         "- Active task context: <one paragraph>\n"
+        "- What to do next: <bullets, 2-4 actionable items sorted by priority>\n"
+        "- What each participant did:\n"
+        f"  - @you: <one sentence summarizing what the user did, e.g. requested changes, gave feedback, asked questions>\n"
+        f"{agent_lines}\n"
         "---\n\n"
         "Be terse. Include the LAST @mention exactly as written if one is pending. "
         "Do NOT add any other content.\n\n"
