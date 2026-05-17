@@ -50,6 +50,7 @@ def write_agent_memory(
     captured_output: str = "",
     error: str = "",
     usage: dict[str, int] | None = None,
+    project_root: Path | None = None,
 ) -> Path | None:
     if agent not in AGENTS:
         return None
@@ -89,7 +90,7 @@ def write_agent_memory(
         f"# @{agent} private effort memory",
         "",
         f"Latest run status: `{status}`",
-        f"Latest artifact: `{artifact_path.relative_to(session_dir)}`",
+        f"Latest artifact: `{artifact_path.relative_to(project_root if project_root is not None else session_dir)}`",
         f"Updated: {datetime.now().isoformat(timespec='seconds')}",
         "",
         "This is private continuity for this same agent. Use it to avoid re-reading or re-deriving prior work, but prefer the shared chat for decisions visible to everyone.",

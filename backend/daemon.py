@@ -441,6 +441,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 final_response=response,
                 captured_output="\n\n".join(captured_output_parts),
                 usage=result.usage,
+                project_root=session.project_root,
             )
             await session.add_trace(
                 mention,
@@ -448,7 +449,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"response_chars={len(response)} "
                 f"response_tokens_est={estimate_tokens(response)} "
                 f"{_format_usage(result.usage)} "
-                f"memory={artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}",
+                f"memory={artifact_path.relative_to(session.project_root) if artifact_path else 'none'}",
             )
             session.append_turn(
                 mention, response,
@@ -478,11 +479,12 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 "cancelled",
                 captured_output="\n\n".join(captured_output_parts),
                 error="Stopped by user.",
+                project_root=session.project_root,
             )
             await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
             safe_body = neutralize_agent_mentions(
                 f"agent {mention} dispatch cancelled by user. Partial effort saved for @{mention}: "
-                f"`{artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}`"
+                f"`{artifact_path.relative_to(session.project_root) if artifact_path else 'none'}`"
             )
             session.append_turn("system", safe_body, kind="system_turn")
             await session.notify_chat_update()
@@ -494,6 +496,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 "failed",
                 captured_output="\n\n".join(captured_output_parts),
                 error=str(e),
+                project_root=session.project_root,
             )
             await session.add_trace(mention, "dispatch failed", str(e))
             safe_reason = neutralize_agent_mentions(str(e)).strip()
@@ -501,7 +504,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 "system",
                 f"error: agent {mention} dispatch failed: {safe_reason}\n\n"
                 f"Partial effort saved for @{mention}: "
-                f"`{artifact_path.relative_to(session.session_dir) if artifact_path else 'none'}`",
+                f"`{artifact_path.relative_to(session.project_root) if artifact_path else 'none'}`",
                 kind="system_turn",
             )
             await session.notify_chat_update()

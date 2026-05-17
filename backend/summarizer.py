@@ -120,7 +120,7 @@ async def compact_agent_memories(
                         compacted = (
                             f"# @{agent} private effort memory\n\n"
                             f"Compacted: {datetime.now().isoformat(timespec='seconds')}\n"
-                            f"Previous memory archive: `{archive_path.relative_to(session.session_dir)}`\n\n"
+                            f"Previous memory archive: `{archive_path.relative_to(session.project_root)}`\n\n"
                             "This is private continuity for this same agent. Use it to avoid re-reading or re-deriving prior work, but prefer the shared chat for decisions visible to everyone.\n\n"
                             "## Compacted Continuity\n"
                             f"{summary}\n"
@@ -128,7 +128,7 @@ async def compact_agent_memories(
                         current_path.write_text(compacted, encoding="utf-8")
                         result["current"] = {
                             "status": "compacted",
-                            "archive": str(archive_path.relative_to(session.session_dir)),
+                            "archive": str(archive_path.relative_to(session.project_root)),
                             "bytes": current_bytes,
                         }
                     except Exception as exc:
@@ -183,7 +183,7 @@ def _rotate_agent_runs(
         "status": "rotated",
         "archived_entries": len(archived_lines),
         "kept_entries": len(kept_lines),
-        "archive": str(archive_path.relative_to(session.session_dir)),
+        "archive": str(archive_path.relative_to(session.project_root)),
     }
 
 
@@ -210,6 +210,7 @@ async def _summarize(full_text: str, config: dict) -> str:
         f"<!-- COMPACTED {timestamp} → see chat-archive/<old-filename> -->\n"
         "## Summary of prior conversation\n"
         "- Decisions made: <bullets>\n"
+        "- Unanswered questions: <bullets, include every question from the user that was not answered, quoted or paraphrased fully>\n"
         "- Open threads: <bullets, including any pending @mention preserved verbatim>\n"
         "- Files touched recently: <list>\n"
         "- Active task context: <one paragraph>\n"
