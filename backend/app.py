@@ -239,7 +239,11 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             return JSONResponse({"error": "turn not found"}, status_code=404)
         del lines[target_idx]
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        rebuild_chat_from_events(session.events_path, session.chat_path)
+        rebuild_chat_from_events(
+            session.events_path,
+            session.chat_path,
+            session.compactions_path,
+        )
         await session.add_trace("system", f"turn {turn_index} erased")
         await session.notify_chat_update()
         return {"ok": True}
@@ -263,7 +267,11 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         event["text"] = new_text
         lines[target_idx] = json.dumps(event, ensure_ascii=True)
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        rebuild_chat_from_events(session.events_path, session.chat_path)
+        rebuild_chat_from_events(
+            session.events_path,
+            session.chat_path,
+            session.compactions_path,
+        )
         await session.add_trace("system", f"turn {turn_index} edited")
         await session.notify_chat_update()
         return {"ok": True}

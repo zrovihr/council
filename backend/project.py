@@ -9,7 +9,11 @@ def read_project_rules(project_root: Path) -> str:
         path = project_root / name
         if path.exists():
             return path.read_text(encoding="utf-8", errors="replace")
-    raise FileNotFoundError(f"No AGENTS.md or CLAUDE.md found in {project_root}")
+    return (
+        "No AGENTS.md or CLAUDE.md was found in this project. "
+        "Use the user's latest request, inspect local files as needed, "
+        "and ask a concise question if the task is ambiguous."
+    )
 
 
 def read_claude_md(project_root: Path) -> str:

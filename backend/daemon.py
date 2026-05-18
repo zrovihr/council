@@ -147,13 +147,54 @@ def _request_still_valid(chat_path: Path, request: dict[str, str]) -> bool:
 
 def _seed_dispatch_ledger(turns: list[dict], dispatched_mentions: set[str]) -> bool:
     changed = False
-    for turn in turns:
+    for i, turn in enumerate(turns):
         for agent in _turn_mentions(turn):
+            if turn["author"] == "you" and not _has_later_response(turns, i):
+                continue
             key = _mention_key(turn["header"], agent)
             if key not in dispatched_mentions:
                 dispatched_mentions.add(key)
                 changed = True
     return changed
+
+
+def _has_later_response(turns: list[dict], turn_index: int) -> bool:
+    for later in turns[turn_index + 1:]:
+        if later["author"] in ("claude", "codex", "deepseek", "system"):
+            return True
+    return False
+
+
+def _prune_unresolved_user_mentions(
+    turns: list[dict],
+    dispatched_mentions: set[str],
+) -> bool:
+    changed = False
+    for i, turn in enumerate(turns):
+        if turn["author"] != "you" or _has_later_response(turns, i):
+            continue
+        for agent in _turn_mentions(turn):
+            key = _mention_key(turn["header"], agent)
+            if key in dispatched_mentions:
+                dispatched_mentions.remove(key)
+                changed = True
+    return changed
+
+
+def _initial_processed_header(
+    turns: list[dict],
+    dispatched_mentions: set[str],
+) -> str:
+    for i in range(len(turns) - 1, -1, -1):
+        turn = turns[i]
+        if turn["author"] != "you" or _has_later_response(turns, i):
+            continue
+        if any(
+            _mention_key(turn["header"], agent) not in dispatched_mentions
+            for agent in _turn_mentions(turn)
+        ):
+            return turns[i - 1]["header"] if i > 0 else ""
+    return turns[-1]["header"] if turns else ""
 
 
 def _load_turn_dispatch_modes(events_path: Path) -> dict[str, str]:
@@ -203,16 +244,32 @@ def _format_usage(usage: dict[str, int]) -> str:
     return " ".join(parts) if parts else "tokens=unavailable"
 
 
+def _display_path(path: Path | None, root: Path) -> str:
+    if path is None:
+        return "none"
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 async def session_daemon_loop(session: Session, registry: SessionRegistry):
     chat_path = session.chat_path
 
-    last_processed_header = _read_latest_turn_header(chat_path)
     dispatch_ledger_path = session.session_dir / "dispatch-ledger.json"
     dispatched_mentions = _load_dispatch_ledger(dispatch_ledger_path)
-    if chat_path.exists() and not dispatched_mentions:
+    existing_turns: list[dict] = []
+    if chat_path.exists():
         text = chat_path.read_text(encoding="utf-8", errors="replace")
-        if _seed_dispatch_ledger(_parse_turns(text), dispatched_mentions):
+        existing_turns = _parse_turns(text)
+        changed = False
+        if _prune_unresolved_user_mentions(existing_turns, dispatched_mentions):
+            changed = True
+        if not dispatched_mentions and _seed_dispatch_ledger(existing_turns, dispatched_mentions):
+            changed = True
+        if changed:
             _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
+    last_processed_header = _initial_processed_header(existing_turns, dispatched_mentions)
     pending_mentions = session.dispatch_queue
     pending_changed = asyncio.Condition()
     await session.set_dispatch_queue(pending_mentions)
@@ -229,6 +286,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             return
         key = _mention_key(header, agent)
         if key in dispatched_mentions:
+            await session.add_trace(
+                agent,
+                "dispatch skipped",
+                f"Already handled mention in {header}.",
+            )
             return
         dispatched_mentions.add(key)
         _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
@@ -240,6 +302,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             "header": header,
             "mode": dispatch_mode,
         }
+        await session.add_trace(
+            agent,
+            "dispatch queued",
+            f"mode={dispatch_mode} source={source} header={header}",
+        )
         if dispatch_mode == "parallel":
             asyncio.create_task(process_dispatch_request(request))
             await session.broadcast_status()
@@ -320,6 +387,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         nonlocal last_processed_header
         nonlocal consecutive_agent_dispatches
         if not _request_still_valid(chat_path, request):
+            await session.add_trace(
+                request.get("agent") or "system",
+                "dispatch skipped",
+                f"Mention no longer exists in {request.get('header', 'unknown turn')}.",
+            )
             return
         mention = request["agent"]
         config = session.effective_config()
@@ -434,6 +506,14 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 await session.finish_dispatch(request["id"])
 
             response = result.text
+            if not response.strip():
+                raw_output = "\n\n".join(captured_output_parts).strip()
+                if raw_output:
+                    raise RuntimeError(
+                        "agent exited without a final chat response; "
+                        "captured CLI output was saved to agent memory"
+                    )
+                raise RuntimeError("agent exited without producing output")
             artifact_path = write_agent_memory(
                 session.session_dir,
                 mention,
@@ -449,7 +529,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"response_chars={len(response)} "
                 f"response_tokens_est={estimate_tokens(response)} "
                 f"{_format_usage(result.usage)} "
-                f"memory={artifact_path.relative_to(session.project_root) if artifact_path else 'none'}",
+                f"memory={_display_path(artifact_path, session.project_root)}",
             )
             session.append_turn(
                 mention, response,
@@ -484,7 +564,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
             safe_body = neutralize_agent_mentions(
                 f"agent {mention} dispatch cancelled by user. Partial effort saved for @{mention}: "
-                f"`{artifact_path.relative_to(session.project_root) if artifact_path else 'none'}`"
+                f"`{_display_path(artifact_path, session.project_root)}`"
             )
             session.append_turn("system", safe_body, kind="system_turn")
             await session.notify_chat_update()
@@ -504,7 +584,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 "system",
                 f"error: agent {mention} dispatch failed: {safe_reason}\n\n"
                 f"Partial effort saved for @{mention}: "
-                f"`{artifact_path.relative_to(session.project_root) if artifact_path else 'none'}`",
+                f"`{_display_path(artifact_path, session.project_root)}`",
                 kind="system_turn",
             )
             await session.notify_chat_update()

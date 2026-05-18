@@ -33,6 +33,13 @@ def ensure_agent_memory_dirs(session_dir: Path) -> None:
         runs_path.touch(exist_ok=True)
 
 
+def _display_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS) -> str:
     if agent not in AGENTS:
         return ""
@@ -90,7 +97,7 @@ def write_agent_memory(
         f"# @{agent} private effort memory",
         "",
         f"Latest run status: `{status}`",
-        f"Latest artifact: `{artifact_path.relative_to(project_root if project_root is not None else session_dir)}`",
+        f"Latest artifact: `{_display_path(artifact_path, project_root if project_root is not None else session_dir)}`",
         f"Updated: {datetime.now().isoformat(timespec='seconds')}",
         "",
         "This is private continuity for this same agent. Use it to avoid re-reading or re-deriving prior work, but prefer the shared chat for decisions visible to everyone.",

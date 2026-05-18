@@ -151,17 +151,79 @@ def render_turn(author: str, text: str, timestamp: str | None = None) -> str:
     return f"\n## [@{author}] {stamp}\n{text}\n\n"
 
 
-def rebuild_chat_from_events(events_path: Path, chat_path: Path) -> None:
+def _compaction_prefix_from_chat(chat_path: Path) -> str:
+    if not chat_path.exists():
+        return ""
+    text = chat_path.read_text(encoding="utf-8", errors="replace")
+    header_re = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$", re.MULTILINE)
+    matches = list(header_re.finditer(text))
+    if not matches:
+        return ""
+    first = matches[0]
+    if first.group(1) != "system" or not first.group(2).startswith("compacted "):
+        return ""
+    if len(matches) == 1:
+        return text.rstrip() + "\n\n"
+    return text[:matches[1].start()].rstrip() + "\n\n"
+
+
+def _load_compaction_summaries(compactions_path: Path | None) -> dict[str, dict]:
+    if not compactions_path or not compactions_path.exists():
+        return {}
+    records: dict[str, dict] = {}
+    for line in compactions_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        compaction_id = record.get("id")
+        if isinstance(compaction_id, str):
+            records[compaction_id] = record
+    return records
+
+
+def _render_compaction_event(event: dict, records: dict[str, dict]) -> str:
+    record = records.get(str(event.get("compaction_id"))) or {}
+    created_at = str(record.get("created_at") or event.get("ts") or "")
+    try:
+        compacted_at = datetime.fromisoformat(created_at).strftime("%Y-%m-%d-%H%M%S")
+    except ValueError:
+        compacted_at = created_at.replace(":", "").replace("T", "-")[:17] or "unknown"
+    archive = record.get("summary_path") or "chat-archive/unknown.md"
+    summary = str(record.get("summary") or "No summary returned.").rstrip()
+    return (
+        f"## [@system] compacted {compacted_at}\n"
+        f"Compacted previous chat. Archive: `{archive}`\n\n"
+        f"{summary}\n\n"
+    )
+
+
+def rebuild_chat_from_events(
+    events_path: Path,
+    chat_path: Path,
+    compactions_path: Path | None = None,
+) -> None:
     if not events_path.exists():
         chat_path.write_text("", encoding="utf-8")
         return
     parts: list[str] = []
+    compaction_records = _load_compaction_summaries(compactions_path)
+    current_compaction_prefix = _compaction_prefix_from_chat(chat_path)
     for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if event.get("kind") == "compaction":
+            rendered = current_compaction_prefix or _render_compaction_event(
+                event,
+                compaction_records,
+            )
+            parts = [rendered]
             continue
         if event.get("kind") not in ("user_turn", "agent_turn", "system_turn"):
             continue
@@ -272,7 +334,11 @@ class Session:
         if not self.meta_path.exists():
             self.save_meta()
         if not self.chat_path.exists():
-            rebuild_chat_from_events(self.events_path, self.chat_path)
+            rebuild_chat_from_events(
+                self.events_path,
+                self.chat_path,
+                self.compactions_path,
+            )
 
     def save_meta(self) -> None:
         self.meta_path.write_text(

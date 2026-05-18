@@ -27,6 +27,13 @@ OPENCODE_ECHO_RE = re.compile(
 )
 
 
+def _display_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 async def compact_chat(session: Session, config: dict) -> None:
     chat_path = session.chat_path
     if not chat_path.exists():
@@ -120,7 +127,7 @@ async def compact_agent_memories(
                         compacted = (
                             f"# @{agent} private effort memory\n\n"
                             f"Compacted: {datetime.now().isoformat(timespec='seconds')}\n"
-                            f"Previous memory archive: `{archive_path.relative_to(session.project_root)}`\n\n"
+                            f"Previous memory archive: `{_display_path(archive_path, session.project_root)}`\n\n"
                             "This is private continuity for this same agent. Use it to avoid re-reading or re-deriving prior work, but prefer the shared chat for decisions visible to everyone.\n\n"
                             "## Compacted Continuity\n"
                             f"{summary}\n"
@@ -128,7 +135,7 @@ async def compact_agent_memories(
                         current_path.write_text(compacted, encoding="utf-8")
                         result["current"] = {
                             "status": "compacted",
-                            "archive": str(archive_path.relative_to(session.project_root)),
+                            "archive": _display_path(archive_path, session.project_root),
                             "bytes": current_bytes,
                         }
                     except Exception as exc:
@@ -183,7 +190,7 @@ def _rotate_agent_runs(
         "status": "rotated",
         "archived_entries": len(archived_lines),
         "kept_entries": len(kept_lines),
-        "archive": str(archive_path.relative_to(session.project_root)),
+        "archive": _display_path(archive_path, session.project_root),
     }
 
 
