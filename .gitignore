@@ -28,6 +28,8 @@ council-prompt-*.md
 config.local.toml
 .env
 .env.local
+AGENTS.md
+CLAUDE.md
 
 # OS / editor
 .DS_Store
@@ -36,5 +38,5 @@ Thumbs.db
 .idea/
 *.swp
 
-# Others
+# Local-only excluded files
 \!Excluded/

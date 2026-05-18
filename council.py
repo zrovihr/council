@@ -118,6 +118,10 @@ def _run_setup_wizard(config: dict) -> bool:
 
     print("\nProviders: claude_cli, codex_cli, opencode, openrouter, deepseek_api, custom")
     print("CLI providers still require their CLI to be installed and authenticated.\n")
+    print("If a CLI is logged into a subscription or paid plan, Council uses that")
+    print("same CLI access. API providers use tokens instead.\n")
+    print("Council cannot perform interactive CLI login. Run each CLI's own")
+    print("login/auth command in a terminal before using that CLI provider.\n")
 
     try:
         create_env = input("Create .env file now? [Y/n]: ").strip().lower()
@@ -239,6 +243,9 @@ def main():
         if missing:
             print(f"  Missing CLIs: {', '.join(missing)}")
             print("  Install the CLIs and authenticate them before using those agents.\n")
+        else:
+            print("  CLI tools were found on PATH, but Council cannot verify login state.")
+            print("  If dispatch asks for auth, complete the CLI's own login flow first.\n")
 
     registry = SessionRegistry(
         council_root=APP_DIR,
