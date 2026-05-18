@@ -32,7 +32,15 @@ def _get_session(registry: SessionRegistry, session_id: str) -> Session:
 
 
 def _allowed_config_changes(body: dict) -> dict:
-    allowed_sections = {"models", "effort", "roles", "dispatch", "providers", "api_keys"}
+    allowed_sections = {
+        "models",
+        "effort",
+        "roles",
+        "dispatch",
+        "providers",
+        "api_keys",
+        "aliases",
+    }
     return {
         section: value
         for section, value in body.items()
@@ -366,7 +374,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         agents = []
         files = []
         if kind in ("all", "agents"):
-            agents = [a for a in list_agents() if a.lower().startswith(q_low)]
+            aliases = session.effective_config().get("aliases", {})
+            agents = [a for a in list_agents(aliases) if a.lower().startswith(q_low)]
         if kind in ("all", "files"):
             all_files = list_project_files(session.project_root)
             if q_low:

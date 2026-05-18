@@ -56,6 +56,7 @@
   let activeSessionId = null;
   let editState = null;
   let openTurnMenu = null;
+  const AGENT_IDS = ['claude', 'codex', 'deepseek'];
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -301,15 +302,42 @@
     });
   }
 
+  function currentAgentAliases() {
+    const aliases = {};
+    for (const id of AGENT_IDS) {
+      aliases[id] = (latestAgents[id] && latestAgents[id].alias) || id;
+    }
+    return aliases;
+  }
+
+  function mentionEntries() {
+    const aliases = currentAgentAliases();
+    const entries = [];
+    for (const id of AGENT_IDS) {
+      entries.push([id, id]);
+      const alias = String(aliases[id] || '').trim().replace(/^@/, '').toLowerCase();
+      if (alias && alias !== id) entries.push([alias, id]);
+    }
+    entries.sort((a, b) => b[0].length - a[0].length);
+    return entries;
+  }
+
+  function mentionRegex() {
+    const names = mentionEntries().map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    return new RegExp('@(' + names.join('|') + ')(?!\\w)', 'gi');
+  }
+
   function agentMentions(text) {
     const matches = [];
     const seen = new Set();
     const withoutCodeBlocks = String(text || '').replace(/```[\s\S]*?```/g, ' ');
     const withoutInlineCode = withoutCodeBlocks.replace(/`[^`\n]*`/g, ' ');
-    for (const match of withoutInlineCode.matchAll(/@(claude|codex|deepseek)\b/g)) {
-      if (!seen.has(match[1])) {
-        seen.add(match[1]);
-        matches.push(match[1]);
+    const aliasToAgent = Object.fromEntries(mentionEntries());
+    for (const match of withoutInlineCode.matchAll(mentionRegex())) {
+      const agent = aliasToAgent[String(match[1]).toLowerCase()];
+      if (agent && !seen.has(agent)) {
+        seen.add(agent);
+        matches.push(agent);
       }
     }
     return matches;
@@ -380,7 +408,8 @@
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
-    const mentionRE = /@(claude|codex|deepseek)\b/gi;
+    const mentionRE = mentionRegex();
+    const aliasToAgent = Object.fromEntries(mentionEntries());
     for (const node of textNodes) {
       if (node.parentNode && node.parentNode.closest('pre, code, .mention')) continue;
       const text = node.textContent;
@@ -392,7 +421,7 @@
       while ((m = mentionRE.exec(text)) !== null) {
         if (m.index > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
         const span = document.createElement('span');
-        span.className = `mention ${m[1].toLowerCase()}`;
+        span.className = `mention ${aliasToAgent[String(m[1]).toLowerCase()] || m[1].toLowerCase()}`;
         span.textContent = m[0];
         frag.appendChild(span);
         lastIdx = mentionRE.lastIndex;
@@ -1036,6 +1065,7 @@
     latestDispatch = data.dispatch || {};
     latestGlobalDispatch = data.global_dispatch || latestGlobalDispatch || {};
     renderAgentModels(latestAgents);
+    updateAgentButtons();
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
     renderQueueStatus(data);
 
@@ -1121,7 +1151,7 @@
   }
 
   function renderAgentModels(agents) {
-    const order = ['claude', 'codex', 'deepseek'];
+    const order = AGENT_IDS;
     agentModelsEl.innerHTML = '';
     for (const id of order) {
       const info = agents[id];
@@ -1132,9 +1162,19 @@
       const effort = info.effort ? ` / ${info.effort}` : '';
       const provider = info.provider ? `${info.provider}: ` : '';
       const key = info.api_key_saved ? ' / key' : '';
-      pill.textContent = `@${id}: ${provider}${info.model || info.runtime || 'default'}${effort}${key}`;
+      pill.textContent = `@${info.alias || id}: ${provider}${info.model || info.runtime || 'default'}${effort}${key}`;
       agentModelsEl.appendChild(pill);
     }
+  }
+
+  function updateAgentButtons() {
+    agentButtons.forEach((btn) => {
+      const id = btn.dataset.agent;
+      const info = latestAgents[id] || {};
+      btn.textContent = '@' + (info.alias || id);
+    });
+    const aliases = AGENT_IDS.map((id) => '@' + ((latestAgents[id] && latestAgents[id].alias) || id));
+    msgInput.placeholder = aliases.join(' / ') + ' activates that agent. Use plain names when not summoning.';
   }
 
   function optionList(options, current) {
@@ -1214,12 +1254,14 @@
     return frag;
   }
 
-  function makeSecretInput(keyName, saved) {
+  function makeSecretInput(keyName, saved, disabled) {
     const input = document.createElement('input');
     input.type = 'password';
     input.autocomplete = 'off';
-    input.placeholder = saved ? 'saved - enter new key to replace' : 'paste API key';
+    input.disabled = Boolean(disabled);
+    input.placeholder = disabled ? 'managed by selected CLI' : (saved ? 'saved - enter new key to replace' : 'paste API key');
     input.addEventListener('change', () => {
+      if (input.disabled) return;
       const value = input.value.trim();
       if (!value) return;
       patchConfig({ api_keys: { [keyName]: value } });
@@ -1231,7 +1273,7 @@
 
   function renderConfig(agents, dispatchCfg) {
     if (configPanel.classList.contains('hidden')) return;
-    const order = ['claude', 'codex', 'deepseek'];
+    const order = AGENT_IDS;
     configGrid.innerHTML = '';
     for (const id of order) {
       const info = agents[id];
@@ -1242,7 +1284,18 @@
 
       const label = document.createElement('div');
       label.className = 'config-agent';
-      label.textContent = `@${id}`;
+      label.textContent = `@${info.alias || id}`;
+
+      const aliasWrap = document.createElement('label');
+      aliasWrap.textContent = 'Mention';
+      const alias = document.createElement('input');
+      alias.type = 'text';
+      alias.value = info.alias || id;
+      alias.placeholder = id;
+      alias.addEventListener('change', () => {
+        patchConfig({ aliases: { [id]: alias.value.trim().replace(/^@/, '') || id } });
+      });
+      aliasWrap.appendChild(alias);
 
       const providerWrap = document.createElement('label');
       providerWrap.textContent = 'Provider';
@@ -1257,8 +1310,9 @@
       effortWrap.appendChild(makeSelect(id, 'effort', info.effort || '', info.effort_options || []));
 
       const keyWrap = document.createElement('label');
+      const cliManaged = ['claude_cli', 'codex_cli', 'opencode'].includes(info.provider || '');
       keyWrap.textContent = info.provider === 'openrouter' ? 'OpenRouter key' : 'API key';
-      keyWrap.appendChild(makeSecretInput(info.provider === 'openrouter' ? 'openrouter' : id, info.api_key_saved));
+      keyWrap.appendChild(makeSecretInput(info.provider === 'openrouter' ? 'openrouter' : id, info.api_key_saved, cliManaged));
 
       const roleWrap = document.createElement('label');
       roleWrap.className = 'role-wrap';
@@ -1272,6 +1326,7 @@
       roleWrap.appendChild(role);
 
       row.appendChild(label);
+      row.appendChild(aliasWrap);
       row.appendChild(providerWrap);
       row.appendChild(modelWrap);
       row.appendChild(effortWrap);
@@ -1593,7 +1648,8 @@
   });
   agentButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      const mention = '@' + btn.dataset.agent;
+      const info = latestAgents[btn.dataset.agent] || {};
+      const mention = '@' + (info.alias || btn.dataset.agent);
       const text = msgInput.value.trim();
       msgInput.value = text ? `${mention} ${text}` : `${mention} `;
       msgInput.focus();

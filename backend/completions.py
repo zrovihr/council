@@ -21,8 +21,12 @@ CACHE_TTL_SECONDS = 60
 _cache: dict[str, tuple[float, list[str]]] = {}
 
 
-def list_agents() -> list[str]:
-    return list(AGENTS)
+def list_agents(aliases: dict | None = None) -> list[str]:
+    result = []
+    for agent in AGENTS:
+        alias = str((aliases or {}).get(agent) or agent).strip().lstrip("@")
+        result.append(alias or agent)
+    return result
 
 
 def list_project_files(project_root: Path) -> list[str]:

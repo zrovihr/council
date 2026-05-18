@@ -138,14 +138,18 @@ def _save_dispatch_ledger(path: Path, dispatched: set[str]) -> None:
     )
 
 
-def _turn_mentions(turn: dict) -> list[str]:
+def _turn_mentions(turn: dict, aliases: dict | None = None) -> list[str]:
     author = turn["author"]
     if author in ("you", "claude", "codex", "deepseek"):
-        return find_agent_mentions(turn["body"])
+        return find_agent_mentions(turn["body"], aliases)
     return []
 
 
-def _request_still_valid(chat_path: Path, request: dict[str, str]) -> bool:
+def _request_still_valid(
+    chat_path: Path,
+    request: dict[str, str],
+    aliases: dict | None = None,
+) -> bool:
     if not chat_path.exists():
         return False
 
@@ -163,14 +167,18 @@ def _request_still_valid(chat_path: Path, request: dict[str, str]) -> bool:
             continue
         if source == "agent" and author not in ("claude", "codex", "deepseek"):
             continue
-        return request["agent"] in _turn_mentions(turn)
+        return request["agent"] in _turn_mentions(turn, aliases)
     return False
 
 
-def _seed_dispatch_ledger(turns: list[dict], dispatched_mentions: set[str]) -> bool:
+def _seed_dispatch_ledger(
+    turns: list[dict],
+    dispatched_mentions: set[str],
+    aliases: dict | None = None,
+) -> bool:
     changed = False
     for i, turn in enumerate(turns):
-        for agent in _turn_mentions(turn):
+        for agent in _turn_mentions(turn, aliases):
             if turn["author"] == "you" and not _has_later_response(turns, i):
                 continue
             key = _mention_key(turn["header"], agent)
@@ -190,12 +198,13 @@ def _has_later_response(turns: list[dict], turn_index: int) -> bool:
 def _prune_unresolved_user_mentions(
     turns: list[dict],
     dispatched_mentions: set[str],
+    aliases: dict | None = None,
 ) -> bool:
     changed = False
     for i, turn in enumerate(turns):
         if turn["author"] != "you" or _has_later_response(turns, i):
             continue
-        for agent in _turn_mentions(turn):
+        for agent in _turn_mentions(turn, aliases):
             key = _mention_key(turn["header"], agent)
             if key in dispatched_mentions:
                 dispatched_mentions.remove(key)
@@ -206,6 +215,7 @@ def _prune_unresolved_user_mentions(
 def _initial_processed_header(
     turns: list[dict],
     dispatched_mentions: set[str],
+    aliases: dict | None = None,
 ) -> str:
     for i in range(len(turns) - 1, -1, -1):
         turn = turns[i]
@@ -213,7 +223,7 @@ def _initial_processed_header(
             continue
         if any(
             _mention_key(turn["header"], agent) not in dispatched_mentions
-            for agent in _turn_mentions(turn)
+            for agent in _turn_mentions(turn, aliases)
         ):
             return turns[i - 1]["header"] if i > 0 else ""
     return turns[-1]["header"] if turns else ""
@@ -282,16 +292,21 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     dispatched_mentions = _load_dispatch_ledger(dispatch_ledger_path)
     existing_turns: list[dict] = []
     if chat_path.exists():
+        startup_aliases = session.effective_config().get("aliases", {})
         text = chat_path.read_text(encoding="utf-8", errors="replace")
         existing_turns = _parse_turns(text)
         changed = False
-        if _prune_unresolved_user_mentions(existing_turns, dispatched_mentions):
+        if _prune_unresolved_user_mentions(existing_turns, dispatched_mentions, startup_aliases):
             changed = True
-        if not dispatched_mentions and _seed_dispatch_ledger(existing_turns, dispatched_mentions):
+        if not dispatched_mentions and _seed_dispatch_ledger(existing_turns, dispatched_mentions, startup_aliases):
             changed = True
         if changed:
             _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
-    last_processed_header = _initial_processed_header(existing_turns, dispatched_mentions)
+    last_processed_header = _initial_processed_header(
+        existing_turns,
+        dispatched_mentions,
+        session.effective_config().get("aliases", {}),
+    )
     pending_mentions = session.dispatch_queue
     pending_changed = asyncio.Condition()
     await session.set_dispatch_queue(pending_mentions)
@@ -355,12 +370,13 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     text = chat_path.read_text(encoding="utf-8", errors="replace")
                     turns = _parse_turns(text)
                     dispatch_modes = _load_turn_dispatch_modes(session.events_path)
+                    aliases = session.effective_config().get("aliases", {})
 
                     start_idx = 0
                     if last_processed_header:
                         header_idx = _find_header_index(turns, last_processed_header)
                         if header_idx is None:
-                            if _seed_dispatch_ledger(turns, dispatched_mentions):
+                            if _seed_dispatch_ledger(turns, dispatched_mentions, aliases):
                                 _save_dispatch_ledger(
                                     dispatch_ledger_path,
                                     dispatched_mentions,
@@ -384,7 +400,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         elif author in ("claude", "codex", "deepseek"):
                             source = "agent"
                         if source:
-                            for mention in _turn_mentions(turn):
+                            for mention in _turn_mentions(turn, aliases):
                                 if source == "agent" and author == mention:
                                     continue
                                 mode = dispatch_modes.get(turn["header"], "parallel")
@@ -408,7 +424,9 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
     async def process_dispatch_request(request: dict[str, str]) -> None:
         nonlocal last_processed_header
         nonlocal consecutive_agent_dispatches
-        if not _request_still_valid(chat_path, request):
+        config = session.effective_config()
+        aliases = config.get("aliases", {})
+        if not _request_still_valid(chat_path, request, aliases):
             await session.add_trace(
                 request.get("agent") or "system",
                 "dispatch skipped",
@@ -416,7 +434,6 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             )
             return
         mention = request["agent"]
-        config = session.effective_config()
         chain_depth_limit = int(config.get("dispatch", {}).get("chain_depth_limit", 3))
         if request["source"] == "user":
             consecutive_agent_dispatches = 0
@@ -444,6 +461,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 max_chars,
                 role=role,
                 session_dir=session.session_dir,
+                aliases=config.get("aliases", {}),
             )
             binary = _get_binary(config, mention)
             model = _get_model(config, mention)

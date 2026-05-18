@@ -14,7 +14,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek")
-STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys")
+STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases")
 SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -43,6 +43,7 @@ def default_session_state() -> dict:
         "dispatch": {},
         "providers": {},
         "api_keys": {},
+        "aliases": {},
     }
 
 
@@ -62,6 +63,7 @@ def write_config(path: Path, config: dict) -> None:
         "effort",
         "roles",
         "providers",
+        "aliases",
         "model_options",
         "effort_options",
         "dispatch",
@@ -150,6 +152,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
     roles = effective.get("roles", {})
     providers = effective.get("providers", {})
     api_keys = effective.get("api_keys", {})
+    aliases = effective.get("aliases", {})
     model_options = effective.get("model_options", {})
     effort_options = effective.get("effort_options", {})
     return {
@@ -157,6 +160,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "label": "Claude",
             "runtime": "claude CLI",
             "provider": _provider_for(providers, "claude"),
+            "alias": str(aliases.get("claude") or "claude"),
             "binary": binaries.get("claude") or models.get("claude") or "claude",
             "model": models.get("claude", ""),
             "effort": efforts.get("claude", ""),
@@ -170,6 +174,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "label": "Codex",
             "runtime": "codex exec",
             "provider": _provider_for(providers, "codex"),
+            "alias": str(aliases.get("codex") or "codex"),
             "binary": binaries.get("codex") or models.get("codex") or "codex",
             "model": models.get("codex", ""),
             "effort": efforts.get("codex", ""),
@@ -183,6 +188,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "label": "Deepseek",
             "runtime": "opencode run",
             "provider": _provider_for(providers, "deepseek"),
+            "alias": str(aliases.get("deepseek") or "deepseek"),
             "binary": binaries.get("opencode") or models.get("opencode") or "opencode",
             "model": models.get("deepseek_pro", "deepseek/deepseek-v4-pro"),
             "effort": efforts.get("deepseek", ""),
@@ -623,6 +629,12 @@ class Session:
                 if section == "dispatch":
                     target[key] = str(value)
                     continue
+                if section == "aliases":
+                    if key not in AGENTS:
+                        continue
+                    alias = str(value).strip().lstrip("@").lower()
+                    target[key] = alias
+                    continue
                 if key not in AGENTS:
                     continue
                 target[key] = str(value)
@@ -903,6 +915,12 @@ class SessionRegistry:
                     continue
                 if section == "dispatch":
                     target[key] = str(value)
+                    continue
+                if section == "aliases":
+                    if key not in AGENTS:
+                        continue
+                    alias = str(value).strip().lstrip("@").lower()
+                    target[key] = alias
                     continue
                 if key not in AGENTS:
                     continue

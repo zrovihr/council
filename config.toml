@@ -28,6 +28,11 @@ claude = "claude_cli"
 codex = "codex_cli"
 deepseek = "opencode"
 
+[aliases]
+claude = "claude"
+codex = "codex"
+deepseek = "deepseek"
+
 [model_options]
 claude = ["claude-opus-4-7", "claude-sonnet-4-5"]
 codex = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]

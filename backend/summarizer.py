@@ -42,7 +42,7 @@ async def compact_chat(session: Session, config: dict) -> None:
     full_text = chat_path.read_text(encoding="utf-8", errors="replace")
     covered_lines = [0, len(full_text.splitlines())]
 
-    pending_mention = find_tail_mention(full_text)
+    pending_mention = find_tail_mention(full_text, session.effective_config().get("aliases", {}))
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     archive_name = f"chat-{timestamp}.md"

@@ -10,7 +10,8 @@ COUNCIL_ROOT = Path(__file__).resolve().parent.parent
 
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
-                 session_dir: Path | None = None) -> str:
+                 session_dir: Path | None = None,
+                 aliases: dict | None = None) -> str:
     clauses: list[str] = []
 
     clauses.append(
@@ -34,7 +35,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "=== HOW THIS CHAT WORKS ===\n"
         "You are participating in a shared council chat for the current "
         "Council session. "
-        "The user and other agents (claude/codex/deepseek) speak in turns. "
+        "The user and other agents speak in turns. "
         f"Council itself is the orchestration app at "
         f"{COUNCIL_ROOT}. The current project root is the "
         "target project being discussed, not necessarily Council's own code. "
@@ -44,10 +45,10 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "When you respond, you MUST:\n"
         "1. Write your response as a single turn body.\n"
         "2. If you want another agent to respond next, mention them with "
-        "@claude / @codex / @deepseek anywhere in your response. "
-        "3. Treat @claude / @codex / @deepseek as activation commands, not "
-        "casual names. If you are only referring to an agent, write claude, "
-        "codex, or deepseek without @.\n"
+        f"{mention_list} anywhere in your response. "
+        f"3. Treat {mention_list} as activation commands, not "
+        f"casual names. If you are only referring to an agent, write {plain_list} "
+        "without @.\n"
         "4. If no activation mention, the chain stops and the user takes over.\n"
         "5. Do NOT pretend to be a different agent. "
         "Do NOT write a turn for someone else.\n"
@@ -115,3 +116,10 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
     return chat_part
+    aliases = aliases or {}
+    mention_names = {
+        agent: str(aliases.get(agent) or agent).strip().lstrip("@")
+        for agent in ("claude", "codex", "deepseek")
+    }
+    mention_list = " / ".join(f"@{name}" for name in mention_names.values())
+    plain_list = ", ".join(mention_names.values())
