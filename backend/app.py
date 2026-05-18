@@ -222,6 +222,15 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/compact")
     async def post_compact(session_id: str):
         session = _get_session(registry, session_id)
+        if session.busy or session.active_dispatches or session.dispatch_queue:
+            return JSONResponse(
+                {
+                    "error": "cannot compact while Council is busy or agents are queued",
+                    "active_dispatches": session.active_dispatches_snapshot(),
+                    "dispatch_queue": session.dispatch_queue_snapshot(),
+                },
+                status_code=409,
+            )
         await session.set_busy("summarizer")
         try:
             await compact_chat(session, session.effective_config())

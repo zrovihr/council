@@ -18,7 +18,7 @@ def _stamp() -> str:
 def _tail(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    return "(earlier output omitted)\n" + text[-max_chars:]
+    return "(earlier private memory/output omitted due size limit; consult archived artifacts if needed)\n" + text[-max_chars:]
 
 
 def agent_memory_root(session_dir: Path) -> Path:

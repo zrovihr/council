@@ -758,10 +758,15 @@
     if (!activeSessionId) return;
     showConfirm(
       'Compact chat?',
-      'This will summarize the chat log using Deepseek Flash. Older turns will be replaced with a summary. This cannot be undone.',
+      'This will summarize older turns into an authoritative shared summary, then keep any new turns written while compaction is running. Council will refuse if agents are still thinking or queued.',
       async () => {
         try {
-          await fetch(sessionApi('/compact'), { method: 'POST' });
+          const res = await fetch(sessionApi('/compact'), { method: 'POST' });
+          if (!res.ok) {
+            const err = await res.json();
+            window.alert(err.error || res.statusText || 'Compact failed');
+            console.error('Compact failed:', err.error || err);
+          }
         } catch (e) {
           console.error('Compact failed:', e);
         }

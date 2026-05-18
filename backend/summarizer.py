@@ -40,6 +40,12 @@ async def compact_chat(session: Session, config: dict) -> None:
         return
 
     full_text = chat_path.read_text(encoding="utf-8", errors="replace")
+    event_lines_at_start = (
+        session.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if session.events_path.exists()
+        else []
+    )
+    event_insert_idx = len(event_lines_at_start)
     covered_lines = [0, len(full_text.splitlines())]
 
     pending_mention = find_tail_mention(full_text, session.effective_config().get("aliases", {}))
@@ -53,6 +59,9 @@ async def compact_chat(session: Session, config: dict) -> None:
     shutil.move(str(chat_path), str(archive_path))
 
     summary = _clean_summary(await _summarize(full_text, config))
+    post_compaction_turns = ""
+    if chat_path.exists():
+        post_compaction_turns = chat_path.read_text(encoding="utf-8", errors="replace").strip()
 
     archive_note = f"Compacted previous chat. Archive: `chat-archive/{archive_name}`"
     new_content = (
@@ -66,25 +75,43 @@ async def compact_chat(session: Session, config: dict) -> None:
     else:
         new_content += "No pending mentions.\n\n"
 
+    if post_compaction_turns:
+        new_content += post_compaction_turns.rstrip() + "\n\n"
+
     chat_path.write_text(new_content, encoding="utf-8")
     memory_results = await compact_agent_memories(session, config, timestamp)
     compaction_id = f"c_{secrets.token_hex(4)}"
+    created_at = datetime.now().isoformat(timespec="seconds")
     record = {
         "id": compaction_id,
         "covered_lines": covered_lines,
         "summary": summary,
         "summary_path": f"chat-archive/{archive_name}",
         "agent_memory": memory_results,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": created_at,
     }
     with open(session.compactions_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=True) + "\n")
-    session.append_event({
+    compaction_event = {
+        "ts": created_at,
         "kind": "compaction",
         "compaction_id": compaction_id,
         "covered_range": covered_lines,
         "agent_memory": memory_results,
-    })
+    }
+    current_event_lines = (
+        session.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if session.events_path.exists()
+        else []
+    )
+    compaction_line = json.dumps(compaction_event, ensure_ascii=True)
+    if not any(f'"compaction_id": "{compaction_id}"' in line for line in current_event_lines):
+        insert_idx = min(event_insert_idx, len(current_event_lines))
+        current_event_lines.insert(insert_idx, compaction_line)
+        session.events_path.write_text(
+            "\n".join(current_event_lines).rstrip() + "\n",
+            encoding="utf-8",
+        )
 
 
 async def compact_agent_memories(

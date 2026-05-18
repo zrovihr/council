@@ -1,6 +1,7 @@
 """Prompt builder: assembles the full prompt for each dispatch."""
 
 import re
+import json
 from pathlib import Path
 from .agent_memory import read_agent_memory
 from .project import read_project_rules
@@ -11,7 +12,8 @@ COUNCIL_ROOT = Path(__file__).resolve().parent.parent
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
                  session_dir: Path | None = None,
-                 aliases: dict | None = None) -> str:
+                 aliases: dict | None = None,
+                 compactions_path: Path | None = None) -> str:
     aliases = aliases or {}
     mention_names = {
         agent: str(aliases.get(agent) or agent).strip().lstrip("@")
@@ -71,25 +73,48 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             f"{role.strip()}\n"
         )
 
-    if session_dir is not None:
-        agent_memory = read_agent_memory(session_dir, target_agent)
-        if agent_memory.strip():
-            clauses.append(
-                "=== YOUR PRIVATE EFFORT MEMORY ===\n"
-                "This memory belongs only to this agent. It may include "
-                "partial work, cancelled-run notes, prior command output, "
-                "or artifacts from your own earlier runs. Use it for "
-                "continuity, but do not treat it as shared consensus unless "
-                "the same information appears in the chat.\n\n"
-                + agent_memory
-            )
-
     turn_clause = (
         f"=== YOUR TURN ===\n"
         f"You are {target_agent}. Respond to the chat above.\n"
     )
+    pinned_summary = _read_latest_compaction_summary(
+        chat_md_path,
+        compactions_path,
+        max_chars=max(3000, max_chars // 3),
+    )
+    if pinned_summary:
+        clauses.append(
+            "=== SHARED COMPACTED CONTEXT (authoritative) ===\n"
+            "This is shared Council context from the latest compaction. Treat "
+            "it as higher authority than private memory unless the latest chat "
+            "explicitly corrects it.\n\n"
+            + pinned_summary
+        )
+
+    agent_memory = ""
+    if session_dir is not None:
+        agent_memory = read_agent_memory(
+            session_dir,
+            target_agent,
+            max_chars=max(1500, min(5000, max_chars // 5)),
+        )
+
+    pre_memory = "\n".join(clauses)
+    memory_budget = max(0, min(5000, max_chars - len(pre_memory) - len(turn_clause) - 4500))
+    if agent_memory.strip() and memory_budget > 500:
+        clauses.append(
+            "=== YOUR PRIVATE EFFORT MEMORY ===\n"
+            "This memory belongs only to this agent. It may include "
+            "partial work, cancelled-run notes, prior command output, "
+            "or artifacts from your own earlier runs. Use it for "
+            "continuity, but do not treat it as shared consensus unless "
+            "the same information appears in the shared compacted context "
+            "or latest chat.\n\n"
+            + _trim_from_start(agent_memory, memory_budget)
+        )
+
     preamble = "\n".join(clauses)
-    chat_budget = max(4000, max_chars - len(preamble) - len(turn_clause) - 200)
+    chat_budget = max(1500, max_chars - len(preamble) - len(turn_clause) - 300)
     chat_tail = _read_chat_tail(chat_md_path, chat_budget)
     clauses.append(
         "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
@@ -99,7 +124,10 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
 
     prompt = "\n".join(clauses)
     if len(prompt) > max_chars:
-        prompt = prompt[-max_chars:]
+        overflow = len(prompt) - max_chars
+        chat_tail = _trim_from_start(chat_tail, max(1000, len(chat_tail) - overflow - 200))
+        clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
+        prompt = "\n".join(clauses)
     return prompt
 
 
@@ -123,3 +151,60 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
     return chat_part
+
+
+def _trim_from_start(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    snippet = text[-max_chars:]
+    header = "(earlier content omitted)\n"
+    return header + snippet[len(header):]
+
+
+def _read_latest_compaction_summary(
+    chat_md_path: Path,
+    compactions_path: Path | None,
+    max_chars: int,
+) -> str:
+    summary = _latest_compaction_record_summary(compactions_path)
+    if not summary:
+        summary = _compaction_prefix_from_chat(chat_md_path)
+    return _trim_from_start(summary.strip(), max_chars).strip()
+
+
+def _latest_compaction_record_summary(compactions_path: Path | None) -> str:
+    if not compactions_path or not compactions_path.exists():
+        return ""
+    latest: dict | None = None
+    for line in compactions_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            latest = record
+    if not latest:
+        return ""
+    archive = latest.get("summary_path") or "chat-archive/unknown.md"
+    created_at = latest.get("created_at") or "unknown time"
+    body = str(latest.get("summary") or "").strip()
+    if not body:
+        return ""
+    return f"Compacted at {created_at}. Archive: `{archive}`\n\n{body}"
+
+
+def _compaction_prefix_from_chat(chat_md_path: Path) -> str:
+    if not chat_md_path.exists():
+        return ""
+    text = chat_md_path.read_text(encoding="utf-8", errors="replace")
+    header_re = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$", re.MULTILINE)
+    matches = list(header_re.finditer(text))
+    if not matches:
+        return ""
+    first = matches[0]
+    if first.group(1) != "system" or not first.group(2).startswith("compacted "):
+        return ""
+    end = matches[1].start() if len(matches) > 1 else len(text)
+    return text[:end].strip()

@@ -462,6 +462,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 role=role,
                 session_dir=session.session_dir,
                 aliases=config.get("aliases", {}),
+                compactions_path=session.compactions_path,
             )
             binary = _get_binary(config, mention)
             model = _get_model(config, mention)
@@ -589,10 +590,25 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             if chat_path.exists():
                 text = chat_path.read_text(encoding="utf-8", errors="replace")
                 line_count = text.count("\n") + 1
-                if line_count > auto_threshold:
+                if (
+                    line_count > auto_threshold
+                    and not session.active_dispatches
+                    and not pending_mentions
+                ):
+                    await session.add_trace(
+                        "system",
+                        "auto compact started",
+                        f"chat lines={line_count} threshold={auto_threshold}",
+                    )
                     await compact_chat(session, config)
                     await session.notify_chat_update()
                     last_processed_header = ""
+                elif line_count > auto_threshold:
+                    await session.add_trace(
+                        "system",
+                        "auto compact deferred",
+                        "Waiting for active and queued agents to finish.",
+                    )
 
         except asyncio.CancelledError:
             if dispatch_task is None or not dispatch_task.cancelled():
