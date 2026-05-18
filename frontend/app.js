@@ -196,7 +196,7 @@
           : 'Mentioned agents were started immediately when possible.';
         header.appendChild(modeBadge);
       }
-      if (td) {
+      if (td && turn.author !== 'you') {
         const inTok = formatTokenCount(td.prompt_tokens_est);
         const outTok = formatTokenCount(td.response_tokens_est);
         if (inTok || outTok) {
@@ -843,11 +843,16 @@
       'Delete this message permanently?',
       async () => {
         try {
-          await fetch(sessionApi('/erase_turn'), {
+          const res = await fetch(sessionApi('/erase_turn'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(turnIdentity(turn, turnIdx)),
           });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            window.alert(err.error || res.statusText || 'Erase failed');
+            return;
+          }
           await fetchChat();
         } catch (e) {
           console.error('Erase turn failed:', e);

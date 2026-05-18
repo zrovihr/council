@@ -51,6 +51,7 @@ def _allowed_config_changes(body: dict) -> dict:
 def _load_event_lines(session: Session) -> tuple[list[str], list[tuple[int, dict]]]:
     lines = session.events_path.read_text(encoding="utf-8").splitlines()
     turns: list[tuple[int, dict]] = []
+    last_compaction_idx = -1
     for line_idx, line in enumerate(lines):
         if not line.strip():
             continue
@@ -58,7 +59,11 @@ def _load_event_lines(session: Session) -> tuple[list[str], list[tuple[int, dict
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if event.get("kind") in TURN_KINDS:
+        if event.get("kind") == "compaction":
+            last_compaction_idx = line_idx
+            turns.clear()
+            continue
+        if event.get("kind") in TURN_KINDS and line_idx > last_compaction_idx:
             turns.append((line_idx, event))
     return lines, turns
 
@@ -245,6 +250,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         target_idx = _find_turn_line(body, turns)
         if target_idx is None:
             return JSONResponse({"error": "turn not found"}, status_code=404)
+        old_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
         del lines[target_idx]
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         rebuild_chat_from_events(
@@ -252,6 +258,9 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             session.chat_path,
             session.compactions_path,
         )
+        new_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
+        if old_chat == new_chat:
+            return JSONResponse({"error": "nothing changed — turn may already be archived"}, status_code=409)
         await session.add_trace("system", f"turn {turn_index} erased")
         await session.notify_chat_update()
         return {"ok": True}
@@ -272,6 +281,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         event = json.loads(lines[target_idx])
         if event.get("author") != "you":
             return JSONResponse({"error": "only your own turns can be edited"}, status_code=403)
+        old_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
         event["text"] = new_text
         lines[target_idx] = json.dumps(event, ensure_ascii=True)
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -280,6 +290,9 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             session.chat_path,
             session.compactions_path,
         )
+        new_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
+        if old_chat == new_chat:
+            return JSONResponse({"error": "nothing changed — turn may already be archived"}, status_code=409)
         await session.add_trace("system", f"turn {turn_index} edited")
         await session.notify_chat_update()
         return {"ok": True}
