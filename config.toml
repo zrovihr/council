@@ -23,6 +23,11 @@ claude = "Architecture review, implementation guidance, and Unity/game-dev judgm
 codex = "Implement code changes, inspect local files, run focused verification, and report touched files. Do not delegate unless the user explicitly asks."
 deepseek = "Small bounded analysis and menial support tasks only. Do not delegate work back to other agents. Do not mention back unless asked."
 
+[providers]
+claude = "claude_cli"
+codex = "codex_cli"
+deepseek = "opencode"
+
 [model_options]
 claude = ["claude-opus-4-7", "claude-sonnet-4-5"]
 codex = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"]

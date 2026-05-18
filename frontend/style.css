@@ -556,7 +556,7 @@ body {
 }
 .config-row {
   display: grid;
-  grid-template-columns: 76px minmax(170px, 1fr) 120px minmax(220px, 1.4fr);
+  grid-template-columns: 76px minmax(130px, 0.8fr) minmax(180px, 1fr) 100px minmax(170px, 0.9fr) minmax(220px, 1.2fr);
   gap: 8px;
   align-items: start;
 }
@@ -578,6 +578,7 @@ body {
   text-transform: uppercase;
 }
 .config-row select,
+.config-row input,
 .config-row textarea {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -596,6 +597,7 @@ body {
   resize: vertical;
 }
 .config-row select:focus,
+.config-row input:focus,
 .config-row textarea:focus {
   border-color: var(--accent);
 }
@@ -637,6 +639,25 @@ body {
   font-size: 12px;
   padding: 3px 6px;
   width: 96px;
+}
+.config-flash-section {
+  display: grid;
+  grid-template-columns: 180px minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 8px;
+}
+.config-flash-section .config-section-label {
+  margin-bottom: 0;
+  padding-top: 19px;
+}
+.config-flash-section label {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 0;
+  text-transform: uppercase;
+}
+.config-flash-section input {
+  width: 100%;
 }
 .config-section input:focus {
   border-color: var(--accent);

@@ -32,7 +32,7 @@ def _get_session(registry: SessionRegistry, session_id: str) -> Session:
 
 
 def _allowed_config_changes(body: dict) -> dict:
-    allowed_sections = {"models", "effort", "roles", "dispatch"}
+    allowed_sections = {"models", "effort", "roles", "dispatch", "providers", "api_keys"}
     return {
         section: value
         for section, value in body.items()

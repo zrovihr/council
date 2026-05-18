@@ -14,7 +14,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek")
-STATE_SECTIONS = ("models", "effort", "roles", "dispatch")
+STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys")
+SENSITIVE_SECTIONS = {"api_keys"}
+SECRET_KEYS = ("claude", "codex", "deepseek", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -34,7 +36,14 @@ def _json_default(path: Path, default: dict) -> dict:
 
 
 def default_session_state() -> dict:
-    return {"models": {}, "effort": {}, "roles": {}}
+    return {
+        "models": {},
+        "effort": {},
+        "roles": {},
+        "dispatch": {},
+        "providers": {},
+        "api_keys": {},
+    }
 
 
 def normalize_project_root(project_root: str | Path) -> Path:
@@ -52,6 +61,7 @@ def write_config(path: Path, config: dict) -> None:
         "models",
         "effort",
         "roles",
+        "providers",
         "model_options",
         "effort_options",
         "dispatch",
@@ -101,46 +111,87 @@ def overlay_config(config: dict, session_state: dict | None) -> dict:
     return merged
 
 
+def redact_config(config: dict) -> dict:
+    redacted = {
+        key: value.copy() if isinstance(value, dict) else value
+        for key, value in config.items()
+    }
+    redacted["api_keys"] = {
+        key: bool(value)
+        for key, value in (config.get("api_keys") or {}).items()
+    }
+    return redacted
+
+
+def _provider_for(providers: dict, agent: str) -> str:
+    defaults = {
+        "claude": "claude_cli",
+        "codex": "codex_cli",
+        "deepseek": "opencode",
+    }
+    return str(providers.get(agent) or defaults.get(agent) or "custom")
+
+
+def _key_saved(api_keys: dict, agent: str, provider: str) -> bool:
+    if api_keys.get(agent):
+        return True
+    if provider == "openrouter" and api_keys.get("openrouter"):
+        return True
+    if agent == "deepseek" and api_keys.get("deepseek"):
+        return True
+    return False
+
+
 def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
     effective = overlay_config(config, session_state)
     models = effective.get("models", {})
     binaries = effective.get("binaries", {})
     efforts = effective.get("effort", {})
     roles = effective.get("roles", {})
+    providers = effective.get("providers", {})
+    api_keys = effective.get("api_keys", {})
     model_options = effective.get("model_options", {})
     effort_options = effective.get("effort_options", {})
     return {
         "claude": {
             "label": "Claude",
             "runtime": "claude CLI",
+            "provider": _provider_for(providers, "claude"),
             "binary": binaries.get("claude") or models.get("claude") or "claude",
             "model": models.get("claude", ""),
             "effort": efforts.get("claude", ""),
             "role": roles.get("claude", ""),
             "model_options": model_options.get("claude", []),
             "effort_options": effort_options.get("claude", []),
+            "api_key_saved": _key_saved(api_keys, "claude", _provider_for(providers, "claude")),
             "note": "Uses the Claude CLI default model unless configured there.",
         },
         "codex": {
             "label": "Codex",
             "runtime": "codex exec",
+            "provider": _provider_for(providers, "codex"),
             "binary": binaries.get("codex") or models.get("codex") or "codex",
             "model": models.get("codex", ""),
             "effort": efforts.get("codex", ""),
             "role": roles.get("codex", ""),
             "model_options": model_options.get("codex", []),
             "effort_options": effort_options.get("codex", []),
+            "api_key_saved": _key_saved(api_keys, "codex", _provider_for(providers, "codex")),
             "note": "Uses the Codex CLI default model unless configured there.",
         },
         "deepseek": {
             "label": "Deepseek",
             "runtime": "opencode run",
+            "provider": _provider_for(providers, "deepseek"),
             "binary": binaries.get("opencode") or models.get("opencode") or "opencode",
             "model": models.get("deepseek_pro", "deepseek/deepseek-v4-pro"),
             "effort": efforts.get("deepseek", ""),
             "role": roles.get("deepseek", ""),
             "model_options": model_options.get("deepseek", []),
             "effort_options": effort_options.get("deepseek", []),
+            "api_key_saved": _key_saved(api_keys, "deepseek", _provider_for(providers, "deepseek")),
+            "flash_model": models.get("deepseek_flash", "deepseek/deepseek-v4-flash"),
+            "flash_key_saved": bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek")),
             "note": "Configured in Council config.toml or this session.",
         },
     }
@@ -563,7 +614,16 @@ class Session:
                 continue
             target = self.state.setdefault(section, {})
             for key, value in section_changes.items():
-                if section != "dispatch" and key not in AGENTS:
+                if section in ("models", "api_keys") and key == "deepseek_flash":
+                    target[key] = str(value)
+                    continue
+                if section == "api_keys" and key == "openrouter":
+                    target[key] = str(value)
+                    continue
+                if section == "dispatch":
+                    target[key] = str(value)
+                    continue
+                if key not in AGENTS:
                     continue
                 target[key] = str(value)
         self.save_state()
@@ -608,6 +668,10 @@ class SessionRegistry:
         self.registry_path = self.sessions_dir / "sessions.json"
         self.config = config
         self.config_path = config_path
+        self.secrets_path = council_root / ".council" / "secrets.json"
+        secrets = _json_default(self.secrets_path, {"api_keys": {}})
+        if isinstance(secrets.get("api_keys"), dict):
+            self.config.setdefault("api_keys", {}).update(secrets["api_keys"])
         self.sessions: dict[str, Session] = {}
         self.active_session_id: str | None = None
 
@@ -822,18 +886,39 @@ class SessionRegistry:
         )
 
     async def update_global_config(self, changes: dict) -> None:
+        touched_secrets = False
         for section in STATE_SECTIONS:
             section_changes = changes.get(section)
             if not isinstance(section_changes, dict):
                 continue
             target = self.config.setdefault(section, {})
+            if section in SENSITIVE_SECTIONS:
+                touched_secrets = True
             for key, value in section_changes.items():
+                if section in ("models", "api_keys") and key == "deepseek_flash":
+                    target[key] = str(value)
+                    continue
+                if section == "api_keys" and key == "openrouter":
+                    target[key] = str(value)
+                    continue
+                if section == "dispatch":
+                    target[key] = str(value)
+                    continue
                 if key not in AGENTS:
                     continue
                 target_key = "deepseek_pro" if section == "models" and key == "deepseek" else key
                 target[target_key] = str(value)
         if self.config_path is not None:
             write_config(self.config_path, self.config)
+        if touched_secrets:
+            self.secrets_path.parent.mkdir(parents=True, exist_ok=True)
+            self.secrets_path.write_text(
+                json.dumps(
+                    {"api_keys": self.config.get("api_keys", {})},
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
         for session in self.sessions.values():
             await session.add_trace("system", "global config updated", ", ".join(changes.keys()))
             await session.broadcast_status()

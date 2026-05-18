@@ -205,6 +205,19 @@ def _clean_summary(summary: str) -> str:
     return "\n".join(lines).strip() or "No summary returned."
 
 
+def _deepseek_env(config: dict) -> dict[str, str]:
+    api_keys = config.get("api_keys", {}) or {}
+    env: dict[str, str] = {}
+    if api_keys.get("deepseek"):
+        env["DEEPSEEK_API_KEY"] = str(api_keys["deepseek"])
+    if api_keys.get("deepseek_flash"):
+        env["DEEPSEEK_FLASH_API_KEY"] = str(api_keys["deepseek_flash"])
+        env["DEEPSEEK_API_KEY"] = str(api_keys["deepseek_flash"])
+    if api_keys.get("openrouter"):
+        env["OPENROUTER_API_KEY"] = str(api_keys["openrouter"])
+    return env
+
+
 async def _summarize(full_text: str, config: dict) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
     agent_lines = "\n".join(
@@ -242,6 +255,7 @@ async def _summarize(full_text: str, config: dict) -> str:
         timeout,
         flash_model,
         "Read the attached transcript and produce the requested compact summary.",
+        env=_deepseek_env(config),
     )
     cleaned = _strip_ansi(stdout)
     cleaned = _strip_opencode_header(cleaned)
@@ -276,6 +290,7 @@ async def _summarize_agent_memory(agent: str, memory_text: str, config: dict) ->
         timeout,
         flash_model,
         f"Read @{agent}'s private memory and produce the requested compact summary.",
+        env=_deepseek_env(config),
     )
     cleaned = _strip_ansi(stdout)
     cleaned = _strip_opencode_header(cleaned)

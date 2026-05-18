@@ -45,6 +45,28 @@ def _get_model_deepseek(config: dict) -> str:
     )
 
 
+def _agent_env(config: dict, agent: str) -> dict[str, str]:
+    api_keys = config.get("api_keys", {}) or {}
+    providers = config.get("providers", {}) or {}
+    provider = str(providers.get(agent) or "")
+    env: dict[str, str] = {}
+    if api_keys.get("openrouter"):
+        env["OPENROUTER_API_KEY"] = str(api_keys["openrouter"])
+    if api_keys.get("deepseek"):
+        env["DEEPSEEK_API_KEY"] = str(api_keys["deepseek"])
+    if api_keys.get("deepseek_flash"):
+        env["DEEPSEEK_FLASH_API_KEY"] = str(api_keys["deepseek_flash"])
+    if agent == "claude" and api_keys.get("claude"):
+        env["ANTHROPIC_API_KEY"] = str(api_keys["claude"])
+    if agent == "codex" and api_keys.get("codex"):
+        env["OPENAI_API_KEY"] = str(api_keys["codex"])
+    if agent == "deepseek" and api_keys.get("deepseek"):
+        env["OPENCODE_DEEPSEEK_API_KEY"] = str(api_keys["deepseek"])
+    if provider:
+        env["COUNCIL_AGENT_PROVIDER"] = provider
+    return env
+
+
 def _parse_turns(text: str) -> list[dict]:
     turns = []
     current = None
@@ -426,6 +448,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             binary = _get_binary(config, mention)
             model = _get_model(config, mention)
             effort = _get_effort(config, mention)
+            agent_env = _agent_env(config, mention)
             if mention == "deepseek":
                 runtime = _get_model_deepseek(config)
                 command_hint = (
@@ -472,6 +495,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         _agent_timeout(config, mention),
                         binary=binary, model=model, effort=effort,
                         on_output=trace_agent_output,
+                        env=agent_env,
                     )
                 if mention == "codex":
                     return await dispatch_codex(
@@ -479,6 +503,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         _agent_timeout(config, mention),
                         binary=binary, model=model, effort=effort,
                         on_output=trace_agent_output,
+                        env=agent_env,
                     )
                 if mention == "deepseek":
                     async def trace_opencode_output(source: str, text: str):
@@ -495,6 +520,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         model=_get_model_deepseek(config),
                         effort=effort,
                         on_output=trace_opencode_output,
+                        env=agent_env,
                     )
                 raise ValueError(f"Unknown agent: {mention}")
 

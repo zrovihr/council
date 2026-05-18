@@ -6,6 +6,7 @@ import shutil
 import logging
 import tempfile
 import sys
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
@@ -178,6 +179,7 @@ async def _run_opencode_with_prompt_file(
     model: str,
     instruction: str,
     on_output: Callable[[str, str], Awaitable[None]] | None = None,
+    env: dict[str, str] | None = None,
 ) -> str:
     file_body = f"{instruction}\n\n{prompt}"
     with tempfile.NamedTemporaryFile(
@@ -198,6 +200,7 @@ async def _run_opencode_with_prompt_file(
             project_root,
             timeout,
             on_output=on_output,
+            env=env,
         )
         return _read_opencode_file_output(stdout, prompt_path, file_body)
     finally:
@@ -229,6 +232,7 @@ async def _run_subprocess(
     timeout: int,
     input_text: str | None = None,
     on_output: Callable[[str, str], Awaitable[None]] | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     if on_output is not None:
         return await _run_subprocess_streaming(
@@ -237,6 +241,7 @@ async def _run_subprocess(
             timeout,
             input_text=input_text,
             on_output=on_output,
+            env=env,
         )
 
     proc = await asyncio.create_subprocess_exec(
@@ -245,6 +250,7 @@ async def _run_subprocess(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env={**os.environ, **(env or {})},
     )
     try:
         input_bytes = (
@@ -337,6 +343,7 @@ async def _run_subprocess_streaming(
     timeout: int,
     input_text: str | None = None,
     on_output: Callable[[str, str], Awaitable[None]] | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -344,6 +351,7 @@ async def _run_subprocess_streaming(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env={**os.environ, **(env or {})},
     )
 
     stdout_parts: list[str] = []
@@ -398,7 +406,8 @@ async def dispatch_claude(prompt: str, project_root: Path,
                           binary: str = "claude",
                           model: str = "",
                           effort: str = "",
-                          on_output: Callable[[str, str], Awaitable[None]] | None = None) -> DispatchResult:
+                          on_output: Callable[[str, str], Awaitable[None]] | None = None,
+                          env: dict[str, str] | None = None) -> DispatchResult:
     argv = [_resolve(binary), "--dangerously-skip-permissions",
             "--no-session-persistence", "--add-dir", str(COUNCIL_ROOT)]
     if model:
@@ -412,6 +421,7 @@ async def dispatch_claude(prompt: str, project_root: Path,
         timeout,
         input_text=prompt,
         on_output=on_output,
+        env=env,
     )
     text = _sanitize_agent_output(stdout)
     return DispatchResult(text=text, usage=_merge_usage(stdout, stderr, text))
@@ -422,7 +432,8 @@ async def dispatch_codex(prompt: str, project_root: Path,
                          binary: str = "codex",
                          model: str = "",
                          effort: str = "",
-                         on_output: Callable[[str, str], Awaitable[None]] | None = None) -> DispatchResult:
+                         on_output: Callable[[str, str], Awaitable[None]] | None = None,
+                         env: dict[str, str] | None = None) -> DispatchResult:
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -447,6 +458,7 @@ async def dispatch_codex(prompt: str, project_root: Path,
             timeout,
             input_text=prompt,
             on_output=on_output,
+            env=env,
         )
         usage = _merge_usage(stdout, stderr)
         if output_path.exists():
@@ -468,7 +480,8 @@ async def dispatch_deepseek(prompt: str, project_root: Path,
                             timeout: int = 300,
                             model: str = "deepseek/deepseek-v4-pro",
                             effort: str = "",
-                            on_output: Callable[[str, str], Awaitable[None]] | None = None) -> DispatchResult:
+                            on_output: Callable[[str, str], Awaitable[None]] | None = None,
+                            env: dict[str, str] | None = None) -> DispatchResult:
     # TODO: deepseek reasoning effort is not yet passed to opencode CLI.
     # opencode may support effort via model suffix or env; investigate.
     _ = effort
@@ -479,6 +492,7 @@ async def dispatch_deepseek(prompt: str, project_root: Path,
         model,
         "Read the attached prompt file and respond to the council chat.",
         on_output=on_output,
+        env=env,
     )
     cleaned = _strip_ansi(stdout)
     cleaned = _strip_opencode_header(cleaned)

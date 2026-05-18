@@ -1,5 +1,7 @@
 # Council App
 
+<img alt="Council logo" src="thecouncil_logo_small.png" align="right" width="120" />
+
 Local browser-based multi-agent chat. User talks to Claude, Codex, and Deepseek through Council-owned sessions stored project-locally under `<project>/.council/sessions/`. Each session has its own project root, chat transcript, event log, compaction records, and model/effort/role overrides.
 
 ## One-time Setup

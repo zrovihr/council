@@ -1130,7 +1130,9 @@
       pill.className = `agent-model ${id}`;
       pill.title = `${info.runtime || ''} - ${info.note || ''}`.trim();
       const effort = info.effort ? ` / ${info.effort}` : '';
-      pill.textContent = `@${id}: ${info.model || info.runtime || 'default'}${effort}`;
+      const provider = info.provider ? `${info.provider}: ` : '';
+      const key = info.api_key_saved ? ' / key' : '';
+      pill.textContent = `@${id}: ${provider}${info.model || info.runtime || 'default'}${effort}${key}`;
       agentModelsEl.appendChild(pill);
     }
   }
@@ -1164,6 +1166,69 @@
     return select;
   }
 
+  const PROVIDER_OPTIONS = [
+    ['claude_cli', 'Claude CLI'],
+    ['codex_cli', 'Codex CLI'],
+    ['opencode', 'OpenCode'],
+    ['openrouter', 'OpenRouter'],
+    ['deepseek_api', 'Deepseek API'],
+    ['custom', 'Custom'],
+  ];
+
+  function makeProviderSelect(agentId, value) {
+    const select = document.createElement('select');
+    select.dataset.agent = agentId;
+    select.dataset.section = 'providers';
+    for (const [id, label] of PROVIDER_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = value || (agentId === 'claude' ? 'claude_cli' : agentId === 'codex' ? 'codex_cli' : 'opencode');
+    select.addEventListener('change', () => {
+      patchConfig({ providers: { [agentId]: select.value } });
+    });
+    return select;
+  }
+
+  function makeModelInput(agentId, value, options) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = value || '';
+    input.placeholder = agentId === 'deepseek' ? 'deepseek/deepseek-v4-pro' : 'model id';
+    input.setAttribute('list', `model-options-${agentId}`);
+    input.addEventListener('change', () => {
+      patchConfig({ models: { [agentId]: input.value.trim() } });
+    });
+    const list = document.createElement('datalist');
+    list.id = `model-options-${agentId}`;
+    for (const opt of optionList(options, value)) {
+      const option = document.createElement('option');
+      option.value = opt;
+      list.appendChild(option);
+    }
+    const frag = document.createDocumentFragment();
+    frag.appendChild(input);
+    frag.appendChild(list);
+    return frag;
+  }
+
+  function makeSecretInput(keyName, saved) {
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.placeholder = saved ? 'saved - enter new key to replace' : 'paste API key';
+    input.addEventListener('change', () => {
+      const value = input.value.trim();
+      if (!value) return;
+      patchConfig({ api_keys: { [keyName]: value } });
+      input.value = '';
+      input.placeholder = 'saved - enter new key to replace';
+    });
+    return input;
+  }
+
   function renderConfig(agents, dispatchCfg) {
     if (configPanel.classList.contains('hidden')) return;
     const order = ['claude', 'codex', 'deepseek'];
@@ -1179,13 +1244,21 @@
       label.className = 'config-agent';
       label.textContent = `@${id}`;
 
+      const providerWrap = document.createElement('label');
+      providerWrap.textContent = 'Provider';
+      providerWrap.appendChild(makeProviderSelect(id, info.provider || ''));
+
       const modelWrap = document.createElement('label');
       modelWrap.textContent = 'Model';
-      modelWrap.appendChild(makeSelect(id, 'models', info.model || '', info.model_options || []));
+      modelWrap.appendChild(makeModelInput(id, info.model || '', info.model_options || []));
 
       const effortWrap = document.createElement('label');
       effortWrap.textContent = 'Effort';
       effortWrap.appendChild(makeSelect(id, 'effort', info.effort || '', info.effort_options || []));
+
+      const keyWrap = document.createElement('label');
+      keyWrap.textContent = info.provider === 'openrouter' ? 'OpenRouter key' : 'API key';
+      keyWrap.appendChild(makeSecretInput(info.provider === 'openrouter' ? 'openrouter' : id, info.api_key_saved));
 
       const roleWrap = document.createElement('label');
       roleWrap.className = 'role-wrap';
@@ -1199,11 +1272,36 @@
       roleWrap.appendChild(role);
 
       row.appendChild(label);
+      row.appendChild(providerWrap);
       row.appendChild(modelWrap);
       row.appendChild(effortWrap);
+      row.appendChild(keyWrap);
       row.appendChild(roleWrap);
       configGrid.appendChild(row);
     }
+
+    const flashInfo = agents.deepseek || {};
+    const flashSection = document.createElement('div');
+    flashSection.className = 'config-section config-flash-section';
+    const flashLabel = document.createElement('div');
+    flashLabel.className = 'config-section-label';
+    flashLabel.textContent = 'Deepseek Flash summarizer';
+    flashSection.appendChild(flashLabel);
+    const flashModelWrap = document.createElement('label');
+    flashModelWrap.textContent = 'Flash model';
+    const flashModel = document.createElement('input');
+    flashModel.type = 'text';
+    flashModel.value = flashInfo.flash_model || 'deepseek/deepseek-v4-flash';
+    flashModel.addEventListener('change', () => {
+      patchConfig({ models: { deepseek_flash: flashModel.value.trim() } });
+    });
+    flashModelWrap.appendChild(flashModel);
+    const flashKeyWrap = document.createElement('label');
+    flashKeyWrap.textContent = 'Flash token';
+    flashKeyWrap.appendChild(makeSecretInput('deepseek_flash', flashInfo.flash_key_saved));
+    flashSection.appendChild(flashModelWrap);
+    flashSection.appendChild(flashKeyWrap);
+    configGrid.appendChild(flashSection);
 
     const dispatchSection = document.createElement('div');
     dispatchSection.className = 'config-section';
