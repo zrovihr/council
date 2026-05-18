@@ -12,6 +12,13 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
                  session_dir: Path | None = None,
                  aliases: dict | None = None) -> str:
+    aliases = aliases or {}
+    mention_names = {
+        agent: str(aliases.get(agent) or agent).strip().lstrip("@")
+        for agent in ("claude", "codex", "deepseek")
+    }
+    mention_list = " / ".join(f"@{name}" for name in mention_names.values())
+    plain_list = ", ".join(mention_names.values())
     clauses: list[str] = []
 
     clauses.append(
@@ -116,10 +123,3 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
     return chat_part
-    aliases = aliases or {}
-    mention_names = {
-        agent: str(aliases.get(agent) or agent).strip().lstrip("@")
-        for agent in ("claude", "codex", "deepseek")
-    }
-    mention_list = " / ".join(f"@{name}" for name in mention_names.values())
-    plain_list = ", ".join(mention_names.values())
