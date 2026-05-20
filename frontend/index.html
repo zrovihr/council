@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Council Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-<link rel="stylesheet" href="/style.css?v=20260518-aliases">
+<link rel="stylesheet" href="/style.css?v=20260520-images">
 </head>
 <body>
 <div id="app">
@@ -60,7 +60,12 @@
         <button class="agent-btn codex" type="button" data-agent="codex">@codex</button>
         <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
       </div>
-      <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use plain names when not summoning."></textarea>
+      <div id="composer">
+        <div id="msg-editor">
+          <div id="msg-highlights" aria-hidden="true"></div>
+          <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use @@ to reply to the last agent."></textarea>
+        </div>
+      </div>
       <div id="send-actions">
         <button id="send-now-btn" title="Send and start mentioned agents immediately">Send</button>
         <button id="send-btn" title="Queue (Ctrl+Enter)">Queue</button>
@@ -124,6 +129,6 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/app.js?v=20260518-aliases"></script>
+<script src="/app.js?v=20260520-images"></script>
 </body>
 </html>

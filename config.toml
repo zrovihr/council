@@ -48,6 +48,11 @@ timeout_seconds = 0
 max_prompt_chars = 25000
 chain_depth_limit = 3
 
+[dispatch.attachments]
+claude = "path-visible"
+codex = "path-visible"
+deepseek = "placeholder"
+
 [compact]
 auto_threshold_lines = 2000
 preserve_last_mention = true

@@ -1,6 +1,7 @@
 """Session registry and shared per-session state."""
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -55,6 +56,17 @@ def _toml_quote(value: str) -> str:
     return json.dumps(value)
 
 
+def _render_toml_value(value) -> str:
+    if isinstance(value, str):
+        return _toml_quote(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        items = ", ".join(_toml_quote(str(v)) for v in value)
+        return f"[{items}]"
+    return str(value)
+
+
 def write_config(path: Path, config: dict) -> None:
     sections = [
         "server",
@@ -77,24 +89,26 @@ def write_config(path: Path, config: dict) -> None:
         if lines:
             lines.append("")
         lines.append(f"[{section}]")
+        nested_sections: list[tuple[str, dict]] = []
         for key, value in values.items():
-            if isinstance(value, str):
-                rendered = _toml_quote(value)
-            elif isinstance(value, bool):
-                rendered = "true" if value else "false"
-            elif isinstance(value, list):
-                items = ", ".join(_toml_quote(str(v)) for v in value)
-                rendered = f"[{items}]"
-            else:
-                rendered = str(value)
-            lines.append(f"{key} = {rendered}")
+            if isinstance(value, dict):
+                nested_sections.append((key, value))
+                continue
+            lines.append(f"{key} = {_render_toml_value(value)}")
+        for nested_key, nested_values in nested_sections:
+            lines.append("")
+            lines.append(f"[{section}.{nested_key}]")
+            for key, value in nested_values.items():
+                if isinstance(value, dict):
+                    continue
+                lines.append(f"{key} = {_render_toml_value(value)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def overlay_config(config: dict, session_state: dict | None) -> dict:
     """Return a shallow config copy with non-empty per-session overrides."""
     merged = {
-        key: value.copy() if isinstance(value, dict) else value
+        key: copy.deepcopy(value) if isinstance(value, dict) else value
         for key, value in config.items()
     }
     if not isinstance(session_state, dict):
@@ -107,6 +121,15 @@ def overlay_config(config: dict, session_state: dict | None) -> dict:
         target = merged.setdefault(section, {})
         for key, value in overrides.items():
             if value is None or value == "":
+                continue
+            if section == "dispatch" and isinstance(value, dict):
+                nested_target = target.setdefault(key, {})
+                if not isinstance(nested_target, dict):
+                    nested_target = {}
+                    target[key] = nested_target
+                for nested_key, nested_value in value.items():
+                    if nested_value is not None and nested_value != "":
+                        nested_target[nested_key] = str(nested_value)
                 continue
             target_key = "deepseek_pro" if section == "models" and key == "deepseek" else key
             target[target_key] = str(value)
@@ -627,6 +650,14 @@ class Session:
                     target[key] = str(value)
                     continue
                 if section == "dispatch":
+                    if isinstance(value, dict):
+                        nested_target = target.setdefault(key, {})
+                        if not isinstance(nested_target, dict):
+                            nested_target = {}
+                            target[key] = nested_target
+                        for nested_key, nested_value in value.items():
+                            nested_target[nested_key] = str(nested_value)
+                        continue
                     target[key] = str(value)
                     continue
                 if section == "aliases":
@@ -914,6 +945,14 @@ class SessionRegistry:
                     target[key] = str(value)
                     continue
                 if section == "dispatch":
+                    if isinstance(value, dict):
+                        nested_target = target.setdefault(key, {})
+                        if not isinstance(nested_target, dict):
+                            nested_target = {}
+                            target[key] = nested_target
+                        for nested_key, nested_value in value.items():
+                            nested_target[nested_key] = str(nested_value)
+                        continue
                     target[key] = str(value)
                     continue
                 if section == "aliases":

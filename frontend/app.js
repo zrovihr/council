@@ -5,6 +5,7 @@
   const chatArea = document.getElementById('chat-area');
   const traceList = document.getElementById('trace-list');
   const msgInput = document.getElementById('msg-input');
+  const msgHighlights = document.getElementById('msg-highlights');
   const sendNowBtn = document.getElementById('send-now-btn');
   const sendBtn = document.getElementById('send-btn');
   const agentButtons = document.querySelectorAll('.agent-btn');
@@ -52,11 +53,16 @@
   let latestGlobalDispatch = {};
   let latestStatus = null;
   let latestTraceEvents = [];
+  let latestTurns = [];
   let sessions = [];
   let activeSessionId = null;
   let editState = null;
   let openTurnMenu = null;
   const AGENT_IDS = ['claude', 'codex', 'deepseek'];
+  const ATTACHMENT_POLICY_OPTIONS = [
+    ['path-visible', 'Path visible'],
+    ['placeholder', 'Placeholder only'],
+  ];
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -431,7 +437,7 @@
     }
   }
 
-  const FILE_PATH_RE = /(?:^|[\s(])((?:(?:[a-zA-Z]:[\\/]|\/|\.\.?[\\/])?[\w.\-\\/]+[\\/][\w.\-\\/]*\.[a-zA-Z]{1,8}))(?=[\s,;:.)'"\]>]|$)/g;
+  const FILE_PATH_RE = /(?:^|[\s(])(@?(?:[a-zA-Z]:[\\/]|\/|\.\.?[\\/])?[\w.\-\\/]+[\\/][\w.\-\\/]*\.[a-zA-Z]{1,8}|@\.?[\w-]+(?:\.[\w-]+)+)(?=[\s,;:.)'"\]>]|$)/g;
 
   function linkFiles(container) {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
@@ -442,7 +448,7 @@
       if (!parent) continue;
       if (parent.closest('pre, code, a, .file-link, .mention, .turn-erase-btn, button, input, textarea, select')) continue;
       const text = node.textContent;
-      if (!/[\\/]/.test(text) || !/\.[a-zA-Z]{1,8}/.test(text)) continue;
+      if (!/\.[a-zA-Z0-9]/.test(text)) continue;
       FILE_PATH_RE.lastIndex = 0;
       const frag = document.createDocumentFragment();
       let lastIdx = 0;
@@ -471,6 +477,131 @@
     }
   }
 
+  function lastAgentSpeaker() {
+    for (let i = latestTurns.length - 1; i >= 0; i--) {
+      const author = latestTurns[i] && latestTurns[i].author;
+      if (AGENT_IDS.includes(author)) return author;
+    }
+    return null;
+  }
+
+  function resolveQuickReply(text) {
+    const trimmed = String(text || '').trim();
+    const agent = lastAgentSpeaker();
+    if (!agent) return trimmed;
+    const info = latestAgents[agent] || {};
+    const mention = '@' + (info.alias || agent);
+    if (trimmed === '@@') return mention;
+    if (trimmed.startsWith('@@ ')) return mention + trimmed.slice(2);
+    return trimmed;
+  }
+
+  function escapeHTML(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function agentClassForMention(mention) {
+    const raw = String(mention || '').replace(/^@/, '').toLowerCase();
+    for (const id of AGENT_IDS) {
+      const info = latestAgents[id] || {};
+      if (raw === id || raw === String(info.alias || '').toLowerCase()) return id;
+    }
+    return '';
+  }
+
+  function composerTokenClass(token) {
+    if (token.startsWith('```')) return 'md-code md-code-block';
+    if (token.startsWith('`')) return 'md-code';
+    if (token.startsWith('@')) {
+      const agentClass = agentClassForMention(token);
+      if (agentClass) return `mention ${agentClass}`;
+      if (/\.[a-zA-Z0-9]/.test(token)) return 'file-link';
+    }
+    if (/\.[a-zA-Z0-9]/.test(token)) return 'file-link';
+    return '';
+  }
+
+  function renderComposerHighlights(text) {
+    const tokenRe = /```[\s\S]*?```|``[^`\n]*(?:`(?!`)[^`\n]*)*``|`[^`\n`]*`|@(?:claude|codex|deepseek|[A-Za-z][\w-]*|\.[\w-]+(?:\.[\w-]+)+)|(?:[a-zA-Z]:[\\/]|\/|\.\.?[\\/])?[\w.\-\\/]+[\\/][\w.\-\\/]*\.[a-zA-Z]{1,8}/g;
+    let html = '';
+    let lastIdx = 0;
+    let m;
+    while ((m = tokenRe.exec(text)) !== null) {
+      const token = m[0];
+      const cls = composerTokenClass(token);
+      html += escapeHTML(text.slice(lastIdx, m.index));
+      html += cls ? `<span class="${cls}">${escapeHTML(token)}</span>` : escapeHTML(token);
+      lastIdx = m.index + token.length;
+    }
+    html += escapeHTML(text.slice(lastIdx));
+    if (text.endsWith('\n')) html += '\n';
+    return html || '&nbsp;';
+  }
+
+  function updateComposerHighlights() {
+    const text = resolveQuickReply(msgInput.value);
+    msgHighlights.innerHTML = renderComposerHighlights(text);
+    msgInput.classList.toggle('has-highlight', Boolean(msgInput.value));
+    msgHighlights.scrollTop = msgInput.scrollTop;
+    msgHighlights.scrollLeft = msgInput.scrollLeft;
+  }
+
+  function insertAtCursor(text) {
+    const value = msgInput.value;
+    const start = msgInput.selectionStart || 0;
+    const end = msgInput.selectionEnd || start;
+    const prefix = start > 0 && value[start - 1] !== '\n' ? '\n' : '';
+    const suffix = end < value.length && value[end] !== '\n' ? '\n' : '';
+    const inserted = prefix + text + suffix;
+    msgInput.value = value.slice(0, start) + inserted + value.slice(end);
+    const caret = start + inserted.length;
+    msgInput.setSelectionRange(caret, caret);
+    msgInput.focus();
+    updateComposerHighlights();
+  }
+
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('failed to read image'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadPastedImage(file) {
+    const data = await readFileAsDataURL(file);
+    const res = await fetch(sessionApi('/attachments'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_type: file.type, data }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'image upload failed');
+    return payload;
+  }
+
+  async function handleImagePaste(e) {
+    if (!activeSessionId || !e.clipboardData || !e.clipboardData.files) return;
+    const images = Array.from(e.clipboardData.files)
+      .filter((file) => file && file.type && file.type.startsWith('image/'));
+    if (images.length === 0) return;
+    e.preventDefault();
+    for (const image of images) {
+      try {
+        const uploaded = await uploadPastedImage(image);
+        insertAtCursor(uploaded.markdown || `![pasted image](${uploaded.url})`);
+      } catch (err) {
+        console.error('Paste image upload failed:', err);
+      }
+    }
+  }
+
   let fileMenuEl = null;
 
   function hideFileMenu() {
@@ -482,6 +613,7 @@
 
   function showFileMenu(anchor, filePath, event) {
     hideFileMenu();
+    const resolvedFilePath = String(filePath || '').replace(/^@/, '');
     const menu = document.createElement('div');
     menu.className = 'file-menu';
     menu.innerHTML = `
@@ -494,7 +626,7 @@
         await fetch(sessionApi('/open-file'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath }),
+          body: JSON.stringify({ path: resolvedFilePath }),
         });
       } catch (e) {
         console.error('Open file failed:', e);
@@ -506,7 +638,7 @@
         await fetch(sessionApi('/open-explorer'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath }),
+          body: JSON.stringify({ path: resolvedFilePath }),
         });
       } catch (e) {
         console.error('Open explorer failed:', e);
@@ -690,6 +822,7 @@
       if (targetSessionId !== activeSessionId) return;
       const chatData = await chatRes.json();
       const turns = parseChatMD(chatData.text || '');
+      latestTurns = turns;
       let tokenData = null;
       if (eventsRes.ok) {
         const eventsData = await eventsRes.json();
@@ -710,7 +843,7 @@
 
   async function sendMessage(dispatchMode = 'parallel') {
     if (!activeSessionId) return;
-    const text = msgInput.value.trim();
+    const text = resolveQuickReply(msgInput.value.trim());
     if (!text) return;
 
     if (text.startsWith('/')) {
@@ -724,6 +857,7 @@
     }
 
     msgInput.value = '';
+    updateComposerHighlights();
     try {
       const res = await fetch(sessionApi('/send'), {
         method: 'POST',
@@ -1077,6 +1211,7 @@
     renderAgentModels(latestAgents);
     updateAgentButtons();
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
+    updateComposerHighlights();
     renderQueueStatus(data);
 
     if (data.busy) {
@@ -1242,6 +1377,27 @@
     return select;
   }
 
+  function defaultAttachmentPolicy(agentId) {
+    return agentId === 'deepseek' ? 'placeholder' : 'path-visible';
+  }
+
+  function makeAttachmentPolicySelect(agentId, value) {
+    const select = document.createElement('select');
+    select.dataset.agent = agentId;
+    select.dataset.section = 'dispatch.attachments';
+    for (const [id, label] of ATTACHMENT_POLICY_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = value || defaultAttachmentPolicy(agentId);
+    select.addEventListener('change', () => {
+      patchConfig({ dispatch: { attachments: { [agentId]: select.value } } });
+    });
+    return select;
+  }
+
   function makeModelInput(agentId, value, options) {
     const input = document.createElement('input');
     input.type = 'text';
@@ -1390,6 +1546,24 @@
       dispatchSection.appendChild(wrap);
     }
     configGrid.appendChild(dispatchSection);
+
+    const attachmentSection = document.createElement('div');
+    attachmentSection.className = 'config-section config-attachment-section';
+    const attachmentLabel = document.createElement('div');
+    attachmentLabel.className = 'config-section-label';
+    attachmentLabel.textContent = 'Attachment prompts';
+    attachmentSection.appendChild(attachmentLabel);
+
+    const attachmentPolicies = dispatchCfg && dispatchCfg.attachments || {};
+    for (const id of order) {
+      const info = agents[id];
+      if (!info) continue;
+      const wrap = document.createElement('label');
+      wrap.textContent = `@${info.alias || id}`;
+      wrap.appendChild(makeAttachmentPolicySelect(id, attachmentPolicies[id]));
+      attachmentSection.appendChild(wrap);
+    }
+    configGrid.appendChild(attachmentSection);
   }
 
   const acBox = document.createElement('div');
@@ -1438,7 +1612,7 @@
       row.className = 'ac-row' + (i === acState.selectedIdx ? ' selected' : '');
       const kind = document.createElement('span');
       kind.className = 'ac-kind ac-kind-' + it.kind;
-      kind.textContent = it.kind === 'command' ? 'cmd' : (it.kind === 'agent' ? 'agent' : 'file');
+      kind.textContent = it.kind === 'command' ? 'cmd' : (it.kind === 'agent' ? 'agent' : (it.kind === 'quick' ? '@@' : 'file'));
       const label = document.createElement('span');
       label.className = 'ac-label';
       label.textContent = it.label;
@@ -1481,6 +1655,18 @@
     return items.slice(0, 40);
   }
 
+  function quickReplyItem() {
+    const agent = lastAgentSpeaker();
+    if (!agent) return null;
+    const info = latestAgents[agent] || {};
+    const mention = '@' + (info.alias || agent);
+    return {
+      label: '@@ -> ' + mention + ' - reply to last agent',
+      insert: mention,
+      kind: 'quick',
+    };
+  }
+
   function buildCommandItems(query) {
     const q = query.toLowerCase();
     return COMMANDS
@@ -1492,6 +1678,9 @@
     if (!acState.open) return;
     if (acState.triggerChar === '/') {
       acState.items = buildCommandItems(acState.query);
+    } else if (acState.triggerChar === '@@') {
+      const item = quickReplyItem();
+      acState.items = item ? [item] : [];
     } else {
       const data = await fetchCompletions(acState.query);
       acState.items = buildItems(data);
@@ -1512,19 +1701,34 @@
     const it = acState.items[acState.selectedIdx];
     const val = msgInput.value;
     const before = val.slice(0, acState.triggerStart);
-    const afterStart = acState.triggerStart + 1 + acState.query.length;
+    const triggerLen = acState.triggerChar === '@@' ? 2 : 1;
+    const afterStart = acState.triggerStart + triggerLen + acState.query.length;
     const after = val.slice(afterStart);
-    const inserted = acState.triggerChar + it.insert + ' ';
+    const inserted = acState.triggerChar === '@@' ? it.insert + ' ' : acState.triggerChar + it.insert + ' ';
     msgInput.value = before + inserted + after;
     const caret = (before + inserted).length;
     msgInput.setSelectionRange(caret, caret);
     closeAC();
     msgInput.focus();
+    updateComposerHighlights();
   }
 
   function updateACFromInput() {
     const val = msgInput.value;
     const caret = msgInput.selectionStart;
+    const quickStart = caret - 2;
+    if (
+      quickStart >= 0 &&
+      val.slice(quickStart, caret) === '@@' &&
+      (quickStart === 0 || /\s/.test(val[quickStart - 1]))
+    ) {
+      acState.open = true;
+      acState.triggerStart = quickStart;
+      acState.triggerChar = '@@';
+      acState.query = '';
+      refreshAC();
+      return;
+    }
     let i = caret - 1;
     let trigger = -1;
     let triggerCh = '';
@@ -1556,13 +1760,25 @@
     refreshAC();
   }
 
-  msgInput.addEventListener('input', updateACFromInput);
-  msgInput.addEventListener('click', updateACFromInput);
+  msgInput.addEventListener('input', () => {
+    updateACFromInput();
+    updateComposerHighlights();
+  });
+  msgInput.addEventListener('click', () => {
+    updateACFromInput();
+    updateComposerHighlights();
+  });
   msgInput.addEventListener('keyup', (e) => {
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
       updateACFromInput();
     }
+    updateComposerHighlights();
   });
+  msgInput.addEventListener('scroll', () => {
+    msgHighlights.scrollTop = msgInput.scrollTop;
+    msgHighlights.scrollLeft = msgInput.scrollLeft;
+  });
+  msgInput.addEventListener('paste', handleImagePaste);
   msgInput.addEventListener('blur', () => {
     setTimeout(closeAC, 150);
   });
@@ -1664,6 +1880,7 @@
       msgInput.value = text ? `${mention} ${text}` : `${mention} `;
       msgInput.focus();
       msgInput.setSelectionRange(msgInput.value.length, msgInput.value.length);
+      updateComposerHighlights();
     });
   });
 

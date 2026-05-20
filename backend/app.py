@@ -1,8 +1,11 @@
 """FastAPI app: multi-session routes, websocket, and static file serving."""
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+import mimetypes
 import os
 import subprocess
 import sys
@@ -13,7 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.websockets import WebSocketState
 
-from .state import Session, SessionRegistry, build_agent_info, rebuild_chat_from_events
+from .state import AGENTS, Session, SessionRegistry, build_agent_info, rebuild_chat_from_events
 from .daemon import session_daemon_loop
 from .summarizer import compact_chat
 from .completions import list_agents, list_project_files
@@ -22,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 TURN_KINDS = {"user_turn", "agent_turn", "system_turn"}
+IMAGE_UPLOAD_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 def _get_session(registry: SessionRegistry, session_id: str) -> Session:
@@ -86,6 +96,68 @@ def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
     if isinstance(turn_index, int) and 0 <= turn_index < len(turns):
         return turns[turn_index][0]
     return None
+
+
+def _last_agent_speaker(session: Session) -> str | None:
+    if not session.events_path.exists():
+        return None
+    try:
+        _, turns = _load_event_lines(session)
+    except Exception:
+        logger.exception("Failed to resolve last agent speaker for %s", session.id)
+        return None
+    for _, event in reversed(turns):
+        author = event.get("author")
+        if author in AGENTS:
+            return str(author)
+    return None
+
+
+def _resolve_quick_reply(text: str, session: Session) -> str:
+    stripped = text.strip()
+    if stripped != "@@" and not stripped.startswith("@@ "):
+        return text
+    agent = _last_agent_speaker(session)
+    if not agent:
+        return text
+    aliases = session.effective_config().get("aliases", {})
+    alias = str(aliases.get(agent) or agent).strip().lstrip("@") or agent
+    replacement = f"@{alias}"
+    if stripped == "@@":
+        return replacement
+    return replacement + stripped[2:]
+
+
+def _decode_image_upload(body: dict) -> tuple[bytes, str]:
+    media_type = str(body.get("media_type") or "").strip().lower()
+    data = str(body.get("data") or "").strip()
+    if not data:
+        raise ValueError("image data is required")
+    if data.startswith("data:"):
+        header, sep, payload = data.partition(",")
+        if not sep or ";base64" not in header:
+            raise ValueError("image data must be base64")
+        media_type = header[5:].split(";", 1)[0].strip().lower()
+        data = payload
+    if media_type not in IMAGE_UPLOAD_TYPES:
+        raise ValueError("unsupported image type")
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("invalid base64 image data")
+    if not raw:
+        raise ValueError("image data is empty")
+    if len(raw) > MAX_IMAGE_UPLOAD_BYTES:
+        raise ValueError("image is larger than 10MB")
+    return raw, media_type
+
+
+def _new_attachment_name(media_type: str) -> str:
+    from datetime import datetime
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    token = os.urandom(4).hex()
+    return f"paste-{stamp}-{token}{IMAGE_UPLOAD_TYPES[media_type]}"
 
 
 async def _stop_task(task: asyncio.Task | None) -> None:
@@ -212,6 +284,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         text = str(body.get("text", ""))
         if not text.strip():
             return JSONResponse({"error": "empty message"}, status_code=400)
+        text = _resolve_quick_reply(text, session)
         dispatch_mode = str(body.get("dispatch_mode") or "parallel").lower()
         if dispatch_mode not in ("parallel", "queued"):
             return JSONResponse({"error": "invalid dispatch_mode"}, status_code=400)
@@ -371,6 +444,44 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/attachments")
+    async def post_attachment(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        try:
+            raw, media_type = _decode_image_upload(body)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        attachments_dir = session.session_dir / "attachments"
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        name = _new_attachment_name(media_type)
+        path = attachments_dir / name
+        path.write_bytes(raw)
+        url = f"/api/sessions/{session.id}/attachments/{name}"
+        rel_path = path.relative_to(session.project_root) if session.project_root in path.parents else path
+        markdown = f"![pasted image]({url})\n\nAttachment: `{rel_path}`"
+        await session.add_trace("system", "image pasted", str(rel_path))
+        return {
+            "ok": True,
+            "name": name,
+            "url": url,
+            "path": str(path),
+            "markdown": markdown,
+        }
+
+    @app.get("/api/sessions/{session_id}/attachments/{name}")
+    async def get_attachment(session_id: str, name: str):
+        session = _get_session(registry, session_id)
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            raise HTTPException(status_code=404)
+        path = (session.session_dir / "attachments" / name).resolve()
+        attachments_dir = (session.session_dir / "attachments").resolve()
+        if not str(path).startswith(str(attachments_dir)) or not path.is_file():
+            raise HTTPException(status_code=404)
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if media_type not in IMAGE_UPLOAD_TYPES:
+            raise HTTPException(status_code=404)
+        return FileResponse(path, media_type=media_type)
 
     @app.patch("/api/sessions/{session_id}/config")
     async def patch_session_config(session_id: str, body: dict):

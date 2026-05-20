@@ -259,6 +259,13 @@ def _agent_timeout(config: dict, agent: str) -> int:
     return int(dispatch.get(f"{agent}_timeout_seconds", default_timeout))
 
 
+def _agent_attachment_policy(config: dict, agent: str) -> str:
+    attachments = config.get("dispatch", {}).get("attachments", {})
+    if not isinstance(attachments, dict):
+        return ""
+    return str(attachments.get(agent, ""))
+
+
 def _format_timeout(timeout: int) -> str:
     return "none" if timeout <= 0 else f"{timeout}s"
 
@@ -463,6 +470,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 session_dir=session.session_dir,
                 aliases=config.get("aliases", {}),
                 compactions_path=session.compactions_path,
+                attachment_policy=_agent_attachment_policy(config, mention),
             )
             binary = _get_binary(config, mention)
             model = _get_model(config, mention)
@@ -504,7 +512,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 await session.add_trace(
                     mention,
                     f"{source}",
-                    text[:2000],
+                    text,
                 )
 
             async def run_dispatch() -> DispatchResult:
@@ -530,7 +538,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         await session.add_trace(
                             "deepseek",
                             f"opencode {source}",
-                            text[:2000],
+                            text,
                         )
 
                     return await dispatch_deepseek(

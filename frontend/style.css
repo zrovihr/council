@@ -635,7 +635,8 @@ body {
   margin-bottom: 4px;
   text-transform: none;
 }
-.config-section input {
+.config-section input,
+.config-section select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -664,7 +665,27 @@ body {
 .config-flash-section input {
   width: 100%;
 }
-.config-section input:focus {
+.config-attachment-section {
+  display: grid;
+  grid-template-columns: 180px repeat(3, minmax(160px, 1fr));
+  gap: 8px;
+}
+.config-attachment-section .config-section-label {
+  margin-bottom: 0;
+  padding-top: 19px;
+}
+.config-attachment-section label {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 0;
+  text-transform: uppercase;
+}
+.config-attachment-section select {
+  width: 100%;
+}
+.config-section input:focus,
+.config-section select:focus {
   border-color: var(--accent);
   outline: none;
 }
@@ -689,6 +710,14 @@ body {
     grid-template-columns: 1fr;
   }
   .config-agent {
+    padding-top: 0;
+  }
+  .config-flash-section,
+  .config-attachment-section {
+    grid-template-columns: 1fr;
+  }
+  .config-flash-section .config-section-label,
+  .config-attachment-section .config-section-label {
     padding-top: 0;
   }
 }
@@ -1024,6 +1053,16 @@ body {
   color: var(--accent);
 }
 
+.turn-body img {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: block;
+  margin: 8px 0;
+  max-height: 520px;
+  max-width: min(100%, 860px);
+  object-fit: contain;
+}
+
 .turn-body .mention {
   font-weight: 700;
   font-family: var(--mono);
@@ -1102,25 +1141,82 @@ body {
 .agent-btn.codex { color: var(--codex); }
 .agent-btn.deepseek { color: var(--deepseek); }
 
-#msg-input {
+#composer {
   flex: 1;
+  min-width: 0;
+}
+
+#msg-editor {
+  position: relative;
+  min-width: 0;
+}
+
+#msg-highlights {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  padding: 8px 12px;
+  pointer-events: none;
+  white-space: pre-wrap;
+  z-index: 1;
+}
+
+#msg-input {
   resize: none;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
+  box-sizing: border-box;
   padding: 8px 12px;
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.5;
   outline: none;
   min-width: 0;
+  position: relative;
+  width: 100%;
+  z-index: 2;
+}
+#msg-input.has-highlight {
+  color: transparent;
+  caret-color: var(--text);
 }
 #msg-input:focus {
   border-color: var(--accent);
 }
 #msg-input::placeholder {
   color: var(--text-dim);
+}
+
+#msg-highlights .mention,
+#msg-highlights .md-code,
+#msg-highlights .file-link {
+  font: inherit;
+}
+#msg-highlights .mention.claude { color: var(--claude); }
+#msg-highlights .mention.codex { color: var(--codex); }
+#msg-highlights .mention.deepseek { color: var(--deepseek); }
+#msg-highlights .md-code {
+  color: #facc15;
+  background: rgba(250,204,21,0.08);
+  border-radius: 3px;
+}
+#msg-highlights .md-code-block {
+  color: #86efac;
+}
+#msg-highlights .file-link {
+  color: #60a5fa;
+  border-bottom: 1px dashed rgba(96,165,250,0.45);
 }
 
 #send-actions {
@@ -1204,6 +1300,10 @@ body {
 .ac-kind-agent {
   background: rgba(125,211,252,0.15);
   color: var(--claude);
+}
+.ac-kind-quick {
+  background: rgba(245,158,11,0.16);
+  color: var(--accent);
 }
 .ac-kind-command {
   background: rgba(74,222,128,0.12);

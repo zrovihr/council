@@ -7,14 +7,23 @@ from .agent_memory import read_agent_memory
 from .project import read_project_rules
 
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
+PASTED_IMAGE_MARKDOWN_RE = re.compile(
+    r"!\[([^\]\n]*)\]\((?:/api/sessions/[^)\s]+/attachments/[^)\s]+|"
+    r"[^)\s]*[\\/]attachments[\\/]paste-[^)\s]+)\)"
+)
+PASTED_ATTACHMENT_LINE_RE = re.compile(
+    r"(?m)^Attachment:\s*`?(?:[^`\n]*[\\/])?attachments[\\/]paste-[^`\n]+`?\s*$"
+)
 
 
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
                  session_dir: Path | None = None,
                  aliases: dict | None = None,
-                 compactions_path: Path | None = None) -> str:
+                 compactions_path: Path | None = None,
+                 attachment_policy: str | None = None) -> str:
     aliases = aliases or {}
+    attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
         agent: str(aliases.get(agent) or agent).strip().lstrip("@")
         for agent in ("claude", "codex", "deepseek")
@@ -51,6 +60,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "If the user asks about Council, orchestrator, dispatch, permissions, "
         "or process behavior, discuss that as Council infrastructure. Do not "
         "mislabel it as a game-dev task.\n"
+        + _attachment_instruction(attachment_policy) +
         "When you respond, you MUST:\n"
         "1. Write your response as a single turn body.\n"
         "2. If you want another agent to respond next, mention them with "
@@ -58,7 +68,9 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         f"3. Treat {mention_list} as activation commands, not "
         f"casual names. If you are only referring to an agent, write {plain_list} "
         "without @.\n"
-        "4. If no activation mention, the chain stops and the user takes over.\n"
+        "4. If you do not include an activation mention, Council will stop "
+        "dispatching after your turn and return control to the user. "
+        "Do not announce that the chain is stopping.\n"
         "5. Do NOT pretend to be a different agent. "
         "Do NOT write a turn for someone else.\n"
         "6. Do NOT include the turn header (`## [@you] ...`) in your output. "
@@ -88,7 +100,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             "This is shared Council context from the latest compaction. Treat "
             "it as higher authority than private memory unless the latest chat "
             "explicitly corrects it.\n\n"
-            + pinned_summary
+            + _apply_attachment_policy(pinned_summary, attachment_policy)
         )
 
     agent_memory = ""
@@ -115,7 +127,10 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
 
     preamble = "\n".join(clauses)
     chat_budget = max(1500, max_chars - len(preamble) - len(turn_clause) - 300)
-    chat_tail = _read_chat_tail(chat_md_path, chat_budget)
+    chat_tail = _apply_attachment_policy(
+        _read_chat_tail(chat_md_path, chat_budget),
+        attachment_policy,
+    )
     clauses.append(
         "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
     )
@@ -151,6 +166,54 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
     return chat_part
+
+
+def _sanitize_pasted_attachments(text: str) -> str:
+    """Hide pasted image URLs/paths from agent prompts while preserving presence."""
+    if not text:
+        return text
+
+    def image_replacement(match: re.Match) -> str:
+        alt = (match.group(1) or "pasted image").strip() or "pasted image"
+        return f"[image attachment present: {alt}; contents not included in agent prompt]"
+
+    text = PASTED_IMAGE_MARKDOWN_RE.sub(image_replacement, text)
+    return PASTED_ATTACHMENT_LINE_RE.sub(
+        "[image attachment path hidden from agent prompt]",
+        text,
+    )
+
+
+def _normalize_attachment_policy(target_agent: str, attachment_policy: str | None) -> str:
+    policy = (attachment_policy or "").strip().lower()
+    if not policy:
+        policy = "path-visible" if target_agent in {"claude", "codex"} else "placeholder"
+    if policy not in {"placeholder", "path-visible"}:
+        return "placeholder"
+    return policy
+
+
+def _attachment_instruction(attachment_policy: str) -> str:
+    if attachment_policy == "path-visible":
+        return (
+            "Pasted images may appear in chat with an Attachment path. "
+            "Only open or inspect an attachment when the user explicitly asks "
+            "about the image contents or asks you to inspect a local image "
+            "file. Otherwise, treat it as context that an image exists and do "
+            "not spend tokens reading it.\n"
+        )
+    return (
+        "Pasted images may appear in chat as attachment placeholders only. "
+        "Acknowledge that an image exists when relevant, but do not claim to "
+        "see or inspect image contents unless the user explicitly provides a "
+        "text description or asks you to inspect a local image file.\n"
+    )
+
+
+def _apply_attachment_policy(text: str, attachment_policy: str) -> str:
+    if attachment_policy == "path-visible":
+        return text
+    return _sanitize_pasted_attachments(text)
 
 
 def _trim_from_start(text: str, max_chars: int) -> str:
