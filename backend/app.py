@@ -84,13 +84,24 @@ def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
     original_text = body.get("original_text")
 
     if isinstance(author, str) and isinstance(display_ts, str) and isinstance(original_text, str):
+        matches: list[int] = []
         for line_idx, event in turns:
             if (
                 event.get("author") == author
                 and event.get("display_ts") == display_ts
-                and (event.get("text") or "") == original_text.rstrip()
+                and (event.get("text") or "").rstrip() == original_text.rstrip()
             ):
-                return line_idx
+                matches.append(line_idx)
+        if not matches:
+            return None
+        turn_index = body.get("index")
+        if isinstance(turn_index, int) and 0 <= turn_index < len(turns):
+            indexed_line_idx = turns[turn_index][0]
+            if indexed_line_idx in matches:
+                return indexed_line_idx
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     turn_index = body.get("index")
     if isinstance(turn_index, int) and 0 <= turn_index < len(turns):
@@ -365,7 +376,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if event.get("author") != "you":
             return JSONResponse({"error": "only your own turns can be edited"}, status_code=403)
         old_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
-        event["text"] = new_text
+        event["text"] = new_text.rstrip()
         lines[target_idx] = json.dumps(event, ensure_ascii=True)
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         rebuild_chat_from_events(
@@ -538,6 +549,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "global_agents": build_agent_info(registry.config),
             "dispatch": session.effective_config().get("dispatch", {}),
             "global_dispatch": registry.config.get("dispatch", {}),
+            "compact": session.compact_status(),
         }
 
     @app.get("/api/sessions/{session_id}/trace")

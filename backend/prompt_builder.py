@@ -150,7 +150,10 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
     prompt = "\n".join(clauses)
     if len(prompt) > max_chars:
         overflow = len(prompt) - max_chars
-        chat_tail = _trim_from_start(chat_tail, max(1000, len(chat_tail) - overflow - 200))
+        chat_tail = _trim_chat_tail_from_start(
+            chat_tail,
+            max(1000, len(chat_tail) - overflow - 200),
+        )
         clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
         prompt = "\n".join(clauses)
     return prompt
@@ -287,6 +290,22 @@ def _trim_from_start(text: str, max_chars: int) -> str:
     snippet = text[-max_chars:]
     header = "(earlier content omitted)\n"
     return header + snippet[len(header):]
+
+
+def _trim_chat_tail_from_start(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+
+    omitted_marker = "(earlier conversation omitted)\n\n"
+    body = text[len(omitted_marker):] if text.startswith(omitted_marker) else text
+    snippet = body[-max_chars:]
+    headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", snippet))
+    if headers:
+        snippet = snippet[headers[0].start():]
+    else:
+        snippet = _trim_from_start(body, max_chars)
+
+    return omitted_marker + snippet.strip()
 
 
 def _read_latest_compaction_summary(

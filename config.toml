@@ -55,6 +55,7 @@ deepseek = "placeholder"
 
 [compact]
 auto_threshold_lines = 2000
+warning_lines_remaining = 200
 preserve_last_mention = true
 verbatim_tail_turns = 6
 verbatim_tail_chars = 12000

@@ -495,6 +495,33 @@ body {
 #status-indicator.idle { color: #22c55e; }
 #status-indicator.busy  { color: #eab308; }
 
+#compact-status {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+#compact-status.warning {
+  color: #fde68a;
+  border-color: rgba(234,179,8,0.55);
+  background: rgba(234,179,8,0.08);
+}
+
+#compact-status.danger {
+  color: #fecaca;
+  border-color: rgba(248,113,113,0.55);
+  background: rgba(248,113,113,0.08);
+}
+
+#compact-status.disabled {
+  opacity: 0.55;
+}
+
 #compact-btn {
   background: var(--surface);
   color: var(--text-dim);
@@ -1165,6 +1192,17 @@ body {
   gap: 2px;
   max-width: min(420px, 100%);
   padding: 5px 7px;
+}
+
+.turn-tool-chip.has-path {
+  cursor: pointer;
+}
+
+.turn-tool-chip.has-path:hover,
+.turn-tool-chip.has-path:focus-visible {
+  background: rgba(255,255,255,0.07);
+  border-color: rgba(245,158,11,0.34);
+  outline: none;
 }
 
 .turn-tool-chip.read,

@@ -19,6 +19,7 @@
   const confirmYesBtn = document.getElementById('confirm-yes-btn');
   const confirmNoBtn = document.getElementById('confirm-no-btn');
   const statusIndicator = document.getElementById('status-indicator');
+  const compactStatusEl = document.getElementById('compact-status');
   const queueBtn = document.getElementById('queue-btn');
   const queueMenu = document.getElementById('queue-menu');
   const projectNameEl = document.getElementById('project-name');
@@ -119,6 +120,17 @@
     let current = null;
     let preamble = '';
 
+    function preambleTurn(body) {
+      const trimmed = body.trim();
+      const firstLine = trimmed.split('\n', 1)[0] || '';
+      const m = /^compacted\s+(\S+)/i.exec(firstLine);
+      return {
+        author: 'system',
+        time: m ? `compacted ${m[1]}` : 'compacted summary',
+        body: trimmed,
+      };
+    }
+
     function finishCurrent() {
       if (!current) return;
       current.body = current.body.replace(/\n?---\s*$/, '');
@@ -130,7 +142,7 @@
       const m = TURN_HEADER_RE.exec(line);
       if (m) {
         if (!current && turns.length === 0 && preamble.trim()) {
-          turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
+          turns.push(preambleTurn(preamble));
           preamble = '';
         }
         finishCurrent();
@@ -145,7 +157,7 @@
     }
     finishCurrent();
     if (turns.length === 0 && preamble.trim()) {
-      turns.push({ author: 'system', time: 'compacted summary', body: preamble.trim() });
+      turns.push(preambleTurn(preamble));
     }
     return turns;
   }
@@ -154,6 +166,15 @@
     if (!n || n <= 0) return null;
     if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
     return String(n);
+  }
+
+  function displayTurnTime(time) {
+    const raw = String(time || '').trim();
+    const compacted = /^compacted\s+(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})$/i.exec(raw);
+    if (compacted) {
+      return `${compacted[1]}-${compacted[2]}-${compacted[3]} ${compacted[4]}:${compacted[5]}:${compacted[6]}`;
+    }
+    return raw;
   }
 
   function turnEventKey(author, time) {
@@ -192,7 +213,10 @@
 
       const timeSpan = document.createElement('span');
       timeSpan.className = 'turn-time';
-      timeSpan.textContent = turn.time;
+      timeSpan.textContent = displayTurnTime(turn.time);
+      if (timeSpan.textContent !== turn.time) {
+        timeSpan.title = turn.time;
+      }
 
       header.appendChild(avatar);
       header.appendChild(authorSpan);
@@ -352,6 +376,27 @@
       const paths = Array.isArray(item.paths)
         ? item.paths.filter((path) => !String(label.textContent || '').includes(String(path || '')))
         : [];
+      const allPaths = Array.isArray(item.paths)
+        ? item.paths.map((path) => String(path || '').trim()).filter(Boolean)
+        : [];
+      const primaryPath = allPaths[0] || '';
+      if (primaryPath) {
+        chip.classList.add('has-path');
+        chip.tabIndex = 0;
+        chip.setAttribute('role', 'button');
+        chip.setAttribute('aria-label', 'File actions for ' + primaryPath);
+        chip.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          showFileMenu(chip, primaryPath, e);
+        });
+        chip.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          showFileMenu(chip, primaryPath, e);
+        });
+      }
       if (paths.length) {
         const pathText = document.createElement('span');
         pathText.className = 'turn-tool-paths';
@@ -524,7 +569,7 @@
         const link = document.createElement('span');
         link.className = 'file-link';
         link.textContent = text.slice(pathStart, pathStart + pathLen);
-        link.title = 'Click to open';
+        link.title = 'File actions';
         link.addEventListener('click', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -682,6 +727,7 @@
     menu.innerHTML = `
       <button class="file-menu-item" data-action="open">Open file</button>
       <button class="file-menu-item" data-action="explorer">Open in explorer</button>
+      <button class="file-menu-item" data-action="copy">Copy path</button>
     `;
     menu.querySelector('[data-action="open"]').addEventListener('click', async () => {
       hideFileMenu();
@@ -705,6 +751,14 @@
         });
       } catch (e) {
         console.error('Open explorer failed:', e);
+      }
+    });
+    menu.querySelector('[data-action="copy"]').addEventListener('click', async () => {
+      hideFileMenu();
+      try {
+        await copyText(resolvedFilePath);
+      } catch (e) {
+        console.error('Copy path failed:', e);
       }
     });
     document.body.appendChild(menu);
@@ -1024,6 +1078,7 @@
       }
       renderTurns(turns, tokenData);
       loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
+      fetchStatus().catch((e) => console.error('Failed to refresh status:', e));
     } catch (e) {
       console.error('Failed to fetch chat:', e);
     }
@@ -1402,6 +1457,7 @@
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
     updateComposerHighlights();
     renderQueueStatus(data);
+    renderCompactStatus(data.compact);
 
     if (data.busy) {
       statusIndicator.className = 'busy';
@@ -1419,6 +1475,26 @@
       statusIndicator.innerHTML = '&#9679; idle';
       cancelBtn.classList.add('hidden');
     }
+  }
+
+  function renderCompactStatus(compact) {
+    if (!compactStatusEl) return;
+    if (!compact || !compact.enabled) {
+      compactStatusEl.className = 'disabled';
+      compactStatusEl.textContent = 'compact off';
+      compactStatusEl.title = 'Auto compact is disabled';
+      return;
+    }
+
+    const remaining = Number(compact.remaining_lines || 0);
+    const remainingPct = Number(compact.remaining_percent || 0);
+    compactStatusEl.className = compact.over_threshold
+      ? 'danger'
+      : (compact.warning ? 'warning' : '');
+    compactStatusEl.textContent = compact.over_threshold
+      ? 'compact due'
+      : `compact ${remainingPct}% left`;
+    compactStatusEl.title = `${remaining} lines until auto compact (${compact.line_count}/${compact.threshold_lines})`;
   }
 
   function dispatchLabel(item) {

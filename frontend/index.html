@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Council Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-<link rel="stylesheet" href="/style.css?v=20260520-images">
+<link rel="stylesheet" href="/style.css?v=20260520-compact-status">
 </head>
 <body>
 <div id="app">
@@ -33,6 +33,7 @@
       </div>
       <button id="config-toggle-btn" title="Edit agent model, effort, and role">Config</button>
       <span id="status-indicator" class="idle">&#9679; idle</span>
+      <span id="compact-status" title="Auto compact remaining">compact --</span>
       <div id="queue-menu-wrap">
         <button id="queue-btn" class="hidden" type="button" title="Show active and queued agents">Queue</button>
         <div id="queue-menu" class="hidden"></div>
@@ -129,6 +130,6 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/app.js?v=20260520-images"></script>
+<script src="/app.js?v=20260520-compact-status"></script>
 </body>
 </html>

@@ -452,6 +452,49 @@ class Session:
             "total_pending": running + queued + unread_finished,
         }
 
+    def compact_status(self) -> dict:
+        compact_config = self.effective_config().get("compact", {})
+        try:
+            threshold = int(compact_config.get("auto_threshold_lines") or 0)
+        except (TypeError, ValueError):
+            threshold = 0
+        try:
+            warning_lines = int(compact_config.get("warning_lines_remaining") or 200)
+        except (TypeError, ValueError):
+            warning_lines = 200
+
+        if self.chat_path.exists():
+            text = self.chat_path.read_text(encoding="utf-8", errors="replace")
+            line_count = text.count("\n") + (1 if text else 0)
+        else:
+            line_count = 0
+
+        if threshold <= 0:
+            return {
+                "enabled": False,
+                "line_count": line_count,
+                "threshold_lines": threshold,
+                "remaining_lines": None,
+                "remaining_percent": None,
+                "used_percent": None,
+                "warning": False,
+                "over_threshold": False,
+            }
+
+        remaining = threshold - line_count
+        remaining_percent = max(0, min(100, round((remaining / threshold) * 100)))
+        used_percent = max(0, min(100, round((line_count / threshold) * 100)))
+        return {
+            "enabled": True,
+            "line_count": line_count,
+            "threshold_lines": threshold,
+            "remaining_lines": max(0, remaining),
+            "remaining_percent": remaining_percent,
+            "used_percent": used_percent,
+            "warning": remaining <= warning_lines,
+            "over_threshold": remaining <= 0,
+        }
+
     def effective_config(self) -> dict:
         return overlay_config(self.config, self.state)
 
@@ -557,6 +600,7 @@ class Session:
             "project": self.project_name,
             "session_id": self.id,
             "agents": build_agent_info(self.config, self.state),
+            "compact": self.compact_status(),
         })
 
     def active_dispatches_snapshot(self) -> list[dict]:
