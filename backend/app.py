@@ -569,6 +569,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
                 "response_tokens_est": event.get("response_tokens_est") or meta.get("response_tokens_est"),
                 "token_usage": event.get("token_usage"),
                 "metadata": meta,
+                "tool_calls": meta.get("tool_calls") or [],
             })
         return {"turns": turns}
 

@@ -1114,6 +1114,87 @@ body {
   margin-bottom: 0;
 }
 
+.turn-tools {
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.turn-tools-summary {
+  align-items: center;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: 11px;
+  gap: 6px;
+  list-style: none;
+  user-select: none;
+}
+
+.turn-tools-summary::-webkit-details-marker {
+  display: none;
+}
+
+.turn-tools-count {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  color: var(--text);
+  min-width: 18px;
+  padding: 1px 5px;
+  text-align: center;
+}
+
+.turn-tools-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.turn-tool-chip {
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  color: var(--text);
+  display: inline-flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 11px;
+  gap: 2px;
+  max-width: min(420px, 100%);
+  padding: 5px 7px;
+}
+
+.turn-tool-chip.read,
+.turn-tool-chip.search {
+  border-color: rgba(125,211,252,0.22);
+}
+
+.turn-tool-chip.write {
+  border-color: rgba(74,222,128,0.28);
+}
+
+.turn-tool-chip.delete {
+  border-color: rgba(248,113,113,0.32);
+}
+
+.turn-tool-chip.test {
+  border-color: rgba(253,186,116,0.28);
+}
+
+.turn-tool-label,
+.turn-tool-paths {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-tool-paths {
+  color: var(--text-dim);
+}
+
 .turn-body code {
   font-family: var(--mono);
   font-size: 13px;

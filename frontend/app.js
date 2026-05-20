@@ -303,6 +303,9 @@
 
       card.appendChild(header);
       card.appendChild(body);
+      if (td && td.tool_calls && td.tool_calls.length) {
+        card.appendChild(renderToolProvenance(td.tool_calls));
+      }
       chatInner.appendChild(card);
     });
 
@@ -319,6 +322,53 @@
     requestAnimationFrame(() => {
       isRenderingChat = false;
     });
+  }
+
+  function renderToolProvenance(toolCalls) {
+    const wrap = document.createElement('details');
+    wrap.className = 'turn-tools';
+
+    const summary = document.createElement('summary');
+    summary.className = 'turn-tools-summary';
+    const count = document.createElement('span');
+    count.className = 'turn-tools-count';
+    count.textContent = String(toolCalls.length);
+    summary.appendChild(count);
+    summary.appendChild(document.createTextNode(' tool ' + (toolCalls.length === 1 ? 'action' : 'actions')));
+    wrap.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'turn-tools-list';
+    for (const item of toolCalls) {
+      const chip = document.createElement('div');
+      chip.className = 'turn-tool-chip ' + cleanToolKind(item.kind);
+      const label = document.createElement('span');
+      label.className = 'turn-tool-label';
+      label.textContent = item.label || item.detail || 'tool action';
+      chip.appendChild(label);
+      if (item.detail) {
+        chip.title = item.detail;
+      }
+      const paths = Array.isArray(item.paths)
+        ? item.paths.filter((path) => !String(label.textContent || '').includes(String(path || '')))
+        : [];
+      if (paths.length) {
+        const pathText = document.createElement('span');
+        pathText.className = 'turn-tool-paths';
+        pathText.textContent = paths.slice(0, 3).join(', ');
+        chip.appendChild(pathText);
+      }
+      list.appendChild(chip);
+    }
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function cleanToolKind(kind) {
+    const normalized = String(kind || 'tool').toLowerCase();
+    return ['read', 'search', 'write', 'delete', 'test', 'command'].includes(normalized)
+      ? normalized
+      : 'tool';
   }
 
   function currentAgentAliases() {
@@ -962,7 +1012,7 @@
         const byKey = {};
         eventsData.turns.forEach((evt, i) => {
           const meta = evt.metadata || {};
-          if (evt.prompt_tokens_est || evt.response_tokens_est || meta.dispatch_mode) {
+          if (evt.prompt_tokens_est || evt.response_tokens_est || meta.dispatch_mode || (evt.tool_calls && evt.tool_calls.length)) {
             td[i] = evt;
             const key = turnEventKey(evt.author, evt.display_ts);
             if (!byKey[key]) byKey[key] = [];

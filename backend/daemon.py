@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .state import Session, SessionRegistry
 from .prompt_builder import build_prompt
+from .provenance import build_tool_provenance
 from .agent_memory import write_agent_memory
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
                             DispatchResult, estimate_tokens)
@@ -458,6 +459,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         max_chars = int(config["dispatch"]["max_prompt_chars"])
         auto_threshold = config["compact"]["auto_threshold_lines"]
         captured_output_parts: list[str] = []
+        dispatch_trace_events: list[dict] = []
         dispatch_task: asyncio.Task | None = None
         try:
             role = _get_role(config, mention)
@@ -509,6 +511,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
 
             async def trace_agent_output(source: str, text: str):
                 captured_output_parts.append(f"[{source}]\n{text}")
+                dispatch_trace_events.append({
+                    "agent": mention,
+                    "message": source,
+                    "detail": text,
+                })
                 await session.add_trace(
                     mention,
                     f"{source}",
@@ -535,6 +542,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 if mention == "deepseek":
                     async def trace_opencode_output(source: str, text: str):
                         captured_output_parts.append(f"[opencode {source}]\n{text}")
+                        dispatch_trace_events.append({
+                            "agent": "deepseek",
+                            "message": f"opencode {source}",
+                            "detail": text,
+                        })
                         await session.add_trace(
                             "deepseek",
                             f"opencode {source}",
@@ -591,6 +603,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     "dispatch_mode": request.get("mode", "parallel"),
                     "prompt_tokens_est": estimate_tokens(prompt),
                     "response_tokens_est": estimate_tokens(response),
+                    "tool_calls": build_tool_provenance(dispatch_trace_events),
                 },
             )
             await session.notify_chat_update()

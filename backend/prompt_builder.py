@@ -125,6 +125,16 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             + _trim_from_start(agent_memory, memory_budget)
         )
 
+    recent_actions = _read_recent_agent_actions(session_dir, max_chars=1800)
+    if recent_actions:
+        clauses.append(
+            "=== RECENT AGENT TOOL ACTIVITY ===\n"
+            "Compact provenance from agent turns since the latest user message. "
+            "Use it as pointers to what changed or was inspected; read files "
+            "yourself before making edits.\n\n"
+            + recent_actions
+        )
+
     preamble = "\n".join(clauses)
     chat_budget = max(1500, max_chars - len(preamble) - len(turn_clause) - 300)
     chat_tail = _apply_attachment_policy(
@@ -166,6 +176,61 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
     return chat_part
+
+
+def _read_recent_agent_actions(session_dir: Path | None, max_chars: int = 1800) -> str:
+    if session_dir is None:
+        return ""
+    events_path = session_dir / "events.jsonl"
+    if not events_path.exists():
+        return ""
+
+    turns: list[dict] = []
+    for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") in ("user_turn", "agent_turn"):
+            turns.append(event)
+
+    latest_user_idx = -1
+    for idx, event in enumerate(turns):
+        if event.get("kind") == "user_turn":
+            latest_user_idx = idx
+
+    lines: list[str] = []
+    relevant_turns = turns[latest_user_idx + 1:]
+    if not any(event.get("kind") == "agent_turn" for event in relevant_turns):
+        relevant_turns = []
+        for event in reversed(turns[:latest_user_idx]):
+            if event.get("kind") == "user_turn":
+                break
+            relevant_turns.append(event)
+        relevant_turns.reverse()
+
+    for event in relevant_turns:
+        if event.get("kind") != "agent_turn":
+            continue
+        metadata = event.get("metadata") or {}
+        tool_calls = metadata.get("tool_calls") or []
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        author = event.get("author") or "agent"
+        display_ts = event.get("display_ts") or ""
+        lines.append(f"- {author} ({display_ts}):")
+        for item in tool_calls[:8]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind") or "tool"
+            label = item.get("label") or item.get("detail") or "tool activity"
+            paths = item.get("paths") or []
+            path_text = f" [{', '.join(map(str, paths[:3]))}]" if paths else ""
+            lines.append(f"  - {kind}: {label}{path_text}")
+
+    return _trim_from_start("\n".join(lines).strip(), max_chars)
 
 
 def _sanitize_pasted_attachments(text: str) -> str:
