@@ -433,14 +433,18 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         rel_path = str(body.get("path") or "").strip()
         if not rel_path:
             return JSONResponse({"error": "path is required"}, status_code=400)
-        full_path = (session.project_root / rel_path).resolve()
-        if not str(full_path).startswith(str(session.project_root.resolve())):
-            return JSONResponse({"error": "path traversal denied"}, status_code=403)
+        href_str = rel_path.replace("\\", "/")
+        if href_str.rstrip("/") == f".council/sessions/{session_id}":
+            full_path = session.session_dir.resolve()
+        else:
+            full_path = (session.project_root / rel_path).resolve()
+            if not str(full_path).startswith(str(session.project_root.resolve())):
+                return JSONResponse({"error": "path traversal denied"}, status_code=403)
         try:
             if sys.platform == "win32":
-                subprocess.Popen(["explorer", f"/select,{str(full_path)}"])
+                subprocess.Popen(["explorer", str(full_path)])
             else:
-                subprocess.Popen(["open", "-R", str(full_path)])
+                subprocess.Popen(["open", str(full_path)])
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
         return {"ok": True}

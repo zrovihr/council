@@ -25,6 +25,28 @@ TASKKILL_SUCCESS_RE = re.compile(
     r"\(child process of PID \d+\) has been terminated\.\s*$"
 )
 THINKING_LINE_RE = re.compile(r"^\s*(Thinking|Thoughts?|Reasoning):\s*", re.IGNORECASE)
+OPENCODE_PROGRESS_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"Let me\b|"
+    r"Now\b|"
+    r"Good[,.]?\b|"
+    r"I need to\b|"
+    r"All changes are implemented and verified\b"
+    r")",
+    re.IGNORECASE,
+)
+OPENCODE_FINAL_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"Done\.|"
+    r"Implemented\b|"
+    r"Fixed\b|"
+    r"Added\b|"
+    r"Artifact produced\b|"
+    r"Diagnostics added\b|"
+    r"Bang,"
+    r")",
+    re.IGNORECASE,
+)
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
 USAGE_PATTERNS = {
     "prompt_tokens": [
@@ -122,6 +144,28 @@ def _sanitize_agent_output(text: str, strip_thinking: bool = False) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _trim_opencode_progress_output(text: str) -> str:
+    """Keep opencode progress chatter in trace, not in the final chat turn."""
+    lines = text.splitlines()
+    first_content_idx = next(
+        (idx for idx, line in enumerate(lines) if line.strip()),
+        None,
+    )
+    if first_content_idx is None:
+        return text.strip()
+    if not OPENCODE_PROGRESS_LINE_RE.match(lines[first_content_idx].strip()):
+        return text.strip()
+
+    final_idx = None
+    for idx in range(first_content_idx + 1, len(lines)):
+        if OPENCODE_FINAL_LINE_RE.match(lines[idx].strip()):
+            final_idx = idx
+            break
+    if final_idx is None:
+        return text.strip()
+    return "\n".join(lines[final_idx:]).strip()
 
 
 def _preview_output(stdout: str, stderr: str, max_chars: int = 1200) -> str:
@@ -497,4 +541,5 @@ async def dispatch_deepseek(prompt: str, project_root: Path,
     cleaned = _strip_ansi(stdout)
     cleaned = _strip_opencode_header(cleaned)
     text = _sanitize_agent_output(cleaned, strip_thinking=True)
+    text = _trim_opencode_progress_output(text)
     return DispatchResult(text=text, usage=_merge_usage(stdout, cleaned, text))

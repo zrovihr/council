@@ -389,6 +389,7 @@ class Session:
             "id": self.id,
             "name": self.name,
             "project_root": str(self.project_root),
+            "session_dir": str(self.session_dir),
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
         }

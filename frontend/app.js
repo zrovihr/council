@@ -690,6 +690,53 @@
       text.appendChild(name);
       text.appendChild(project);
 
+      const ctxWrap = document.createElement('span');
+      ctxWrap.className = 'session-ctx-wrap';
+      ctxWrap.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+
+      const ctxBtn = document.createElement('span');
+      ctxBtn.className = 'session-ctx-btn';
+      ctxBtn.textContent = '...';
+      ctxBtn.title = 'Session actions';
+      ctxBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSessionCtx(session, ctxBtn);
+      });
+
+      const ctxMenu = document.createElement('div');
+      ctxMenu.className = 'session-ctx-menu hidden';
+
+      const openFolderItem = document.createElement('button');
+      openFolderItem.type = 'button';
+      openFolderItem.className = 'session-ctx-item';
+      openFolderItem.textContent = 'Open folder';
+      openFolderItem.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openSessionFolder(session);
+        closeSessionCtxMenus();
+      });
+
+      const copyPathItem = document.createElement('button');
+      copyPathItem.type = 'button';
+      copyPathItem.className = 'session-ctx-item';
+      copyPathItem.textContent = 'Copy path';
+      copyPathItem.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        copySessionPath(session);
+        closeSessionCtxMenus();
+      });
+
+      ctxMenu.appendChild(openFolderItem);
+      ctxMenu.appendChild(copyPathItem);
+      ctxWrap.appendChild(ctxBtn);
+      ctxWrap.appendChild(ctxMenu);
+
       const del = document.createElement('span');
       del.className = 'session-delete';
       del.textContent = 'x';
@@ -701,6 +748,7 @@
       });
 
       item.appendChild(text);
+      item.appendChild(ctxWrap);
       item.appendChild(del);
       item.addEventListener('click', () => switchSession(session.id));
       sessionList.appendChild(item);
@@ -808,6 +856,48 @@
       }
     } catch (e) {
       console.error('Rename failed:', e);
+    }
+  }
+
+  function sessionProjectPath(session) {
+    return session.project_root || '';
+  }
+
+  function toggleSessionCtx(session, btn) {
+    const menu = btn.parentElement.querySelector('.session-ctx-menu');
+    if (!menu) return;
+    const isOpen = !menu.classList.contains('hidden');
+    closeSessionCtxMenus();
+    if (!isOpen) {
+      menu.classList.remove('hidden');
+    }
+  }
+
+  function closeSessionCtxMenus() {
+    document.querySelectorAll('.session-ctx-menu').forEach((m) => m.classList.add('hidden'));
+  }
+
+  function openSessionFolder(session) {
+    fetch('/api/sessions/' + encodeURIComponent(session.id) + '/open-explorer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '.' }),
+    }).catch((e) => console.error('open folder failed:', e));
+  }
+
+  function copySessionPath(session) {
+    const path = sessionProjectPath(session);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(path).catch((e) => console.error('copy failed:', e));
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = path;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
     }
   }
 
@@ -1830,6 +1920,9 @@
     if (openTurnMenu && !e.target.closest('.turn-more-wrap')) {
       openTurnMenu.classList.add('hidden');
       openTurnMenu = null;
+    }
+    if (!e.target.closest('.session-ctx-wrap')) {
+      closeSessionCtxMenus();
     }
   });
   editSaveBtn.addEventListener('click', saveEditTurn);
