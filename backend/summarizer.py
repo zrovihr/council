@@ -58,14 +58,15 @@ async def compact_chat(session: Session, config: dict) -> None:
     archive_dir = session.archive_dir
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / archive_name
-
-    shutil.move(str(chat_path), str(archive_path))
-
     summary = _clean_summary(await _summarize(full_text, config))
     summary = _append_recent_verbatim_turns(summary, full_text, config)
     post_compaction_turns = ""
     if chat_path.exists():
-        post_compaction_turns = chat_path.read_text(encoding="utf-8", errors="replace").strip()
+        current_text = chat_path.read_text(encoding="utf-8", errors="replace")
+        if current_text.startswith(full_text):
+            post_compaction_turns = current_text[len(full_text):].strip()
+        elif current_text != full_text:
+            post_compaction_turns = current_text.strip()
 
     archive_note = f"Compacted previous chat. Archive: `chat-archive/{archive_name}`"
     new_content = (
@@ -82,6 +83,7 @@ async def compact_chat(session: Session, config: dict) -> None:
     if post_compaction_turns:
         new_content += post_compaction_turns.rstrip() + "\n\n"
 
+    archive_path.write_text(full_text, encoding="utf-8")
     chat_path.write_text(new_content, encoding="utf-8")
     memory_results = await compact_agent_memories(session, config, timestamp)
     compaction_id = f"c_{secrets.token_hex(4)}"
