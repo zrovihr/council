@@ -25,6 +25,9 @@ OPENCODE_DONE_RE = re.compile(
 OPENCODE_ECHO_RE = re.compile(
     r"^(?:Read the attached (?:prompt file|transcript)|Read @\w+'s private memory) and.*\.$"
 )
+TURN_HEADER_RE = re.compile(r"(?m)^## \[@([^\]]+)\] [^\n]*\n")
+DEFAULT_VERBATIM_TAIL_TURNS = 6
+DEFAULT_VERBATIM_TAIL_CHARS = 12000
 
 
 def _display_path(path: Path, root: Path) -> str:
@@ -59,6 +62,7 @@ async def compact_chat(session: Session, config: dict) -> None:
     shutil.move(str(chat_path), str(archive_path))
 
     summary = _clean_summary(await _summarize(full_text, config))
+    summary = _append_recent_verbatim_turns(summary, full_text, config)
     post_compaction_turns = ""
     if chat_path.exists():
         post_compaction_turns = chat_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -232,6 +236,58 @@ def _clean_summary(summary: str) -> str:
     return "\n".join(lines).strip() or "No summary returned."
 
 
+def _append_recent_verbatim_turns(summary: str, full_text: str, config: dict) -> str:
+    compact_config = config.get("compact", {})
+    max_turns = int(
+        compact_config.get("verbatim_tail_turns", DEFAULT_VERBATIM_TAIL_TURNS)
+    )
+    max_chars = int(
+        compact_config.get("verbatim_tail_chars", DEFAULT_VERBATIM_TAIL_CHARS)
+    )
+    recent = _recent_verbatim_turns(full_text, max_turns=max_turns, max_chars=max_chars)
+    if not recent:
+        return summary
+
+    cleaned_summary = summary.rstrip()
+    cleaned_summary = re.sub(
+        r"\n+## Recent verbatim turns\n(?:.*?\n)*?```text\n.*?\n```\s*$",
+        "",
+        cleaned_summary,
+        flags=re.DOTALL,
+    )
+    return (
+        f"{cleaned_summary}\n\n"
+        "## Recent verbatim turns\n"
+        "These are the latest non-system turns preserved exactly so the next agent "
+        "can continue without losing wording or context.\n\n"
+        "```text\n"
+        f"{recent}\n"
+        "```"
+    )
+
+
+def _recent_verbatim_turns(full_text: str, max_turns: int, max_chars: int) -> str:
+    if max_turns <= 0 or max_chars <= 0:
+        return ""
+
+    matches = list(TURN_HEADER_RE.finditer(full_text))
+    turns = []
+    for idx, match in enumerate(matches):
+        speaker = match.group(1).strip().lower()
+        if speaker == "system":
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(full_text)
+        turn = full_text[match.start():end].rstrip()
+        if turn:
+            turns.append(turn)
+
+    selected = turns[-max_turns:]
+    while selected and len("\n\n".join(selected)) > max_chars:
+        selected.pop(0)
+
+    return "\n\n".join(selected).strip()
+
+
 def _deepseek_env(config: dict) -> dict[str, str]:
     api_keys = config.get("api_keys", {}) or {}
     env: dict[str, str] = {}
@@ -267,6 +323,7 @@ async def _summarize(full_text: str, config: dict) -> str:
         f"{agent_lines}\n"
         "---\n\n"
         "Be terse. Include the LAST @mention exactly as written if one is pending. "
+        "Do not quote recent turns yourself; Council will append a verbatim recent-turn block after this summary. "
         "Do NOT add any other content.\n\n"
         "Transcript:\n" + full_text
     )

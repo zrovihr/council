@@ -156,6 +156,10 @@
     return String(n);
   }
 
+  function turnEventKey(author, time) {
+    return `${author || 'system'}\n${time || ''}`;
+  }
+
   function renderTurns(turns, tokenData) {
     const previousScrollHeight = chatArea.scrollHeight;
     const previousScrollTop = chatArea.scrollTop;
@@ -164,6 +168,8 @@
     isRenderingChat = true;
 
     chatInner.innerHTML = '';
+    const tokenQueues = tokenData && tokenData.byKey ? tokenData.byKey : null;
+    const tokenQueueOffsets = {};
     turns.forEach((turn, turnIdx) => {
       const card = document.createElement('div');
       card.className = 'turn-card';
@@ -192,7 +198,14 @@
       header.appendChild(authorSpan);
       header.appendChild(timeSpan);
 
-      const td = tokenData && tokenData[turnIdx];
+      let td = tokenData && tokenData[turnIdx];
+      if (tokenQueues) {
+        const key = turnEventKey(turn.author, turn.time);
+        const queue = tokenQueues[key] || [];
+        const offset = tokenQueueOffsets[key] || 0;
+        td = queue[offset] || td;
+        tokenQueueOffsets[key] = offset + 1;
+      }
       if (td && td.metadata && td.metadata.dispatch_mode) {
         const modeBadge = document.createElement('span');
         modeBadge.className = `turn-mode-badge ${td.metadata.dispatch_mode}`;
@@ -249,7 +262,7 @@
       copyMetadataBtn.textContent = 'Copy chat metadata';
       copyMetadataBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await copyTurnMetadata(turn, turnIdx, tokenData && tokenData[turnIdx], turns.length);
+        await copyTurnMetadata(turn, turnIdx, td, turns.length);
         copyMetadataBtn.textContent = 'Copied';
         setTimeout(() => {
           copyMetadataBtn.textContent = 'Copy chat metadata';
@@ -690,6 +703,34 @@
       text.appendChild(name);
       text.appendChild(project);
 
+      const activity = session.activity || {};
+      const runningCount = Number(activity.running || 0);
+      const queuedCount = Number(activity.queued || 0);
+      const unreadFinishedCount = Number(activity.unread_finished || 0);
+      const counts = document.createElement('span');
+      counts.className = 'session-counts';
+      if (runningCount) {
+        const chip = document.createElement('span');
+        chip.className = 'session-count running';
+        chip.textContent = `run ${runningCount}`;
+        chip.title = `${runningCount} running quer${runningCount === 1 ? 'y' : 'ies'}`;
+        counts.appendChild(chip);
+      }
+      if (queuedCount) {
+        const chip = document.createElement('span');
+        chip.className = 'session-count queued';
+        chip.textContent = `queue ${queuedCount}`;
+        chip.title = `${queuedCount} queued quer${queuedCount === 1 ? 'y' : 'ies'}`;
+        counts.appendChild(chip);
+      }
+      if (unreadFinishedCount) {
+        const chip = document.createElement('span');
+        chip.className = 'session-count unread';
+        chip.textContent = `new ${unreadFinishedCount}`;
+        chip.title = `${unreadFinishedCount} finished response${unreadFinishedCount === 1 ? '' : 's'} pending read`;
+        counts.appendChild(chip);
+      }
+
       const ctxWrap = document.createElement('span');
       ctxWrap.className = 'session-ctx-wrap';
       ctxWrap.addEventListener('click', (e) => {
@@ -748,6 +789,7 @@
       });
 
       item.appendChild(text);
+      if (counts.children.length) item.appendChild(counts);
       item.appendChild(ctxWrap);
       item.appendChild(del);
       item.addEventListener('click', () => switchSession(session.id));
@@ -917,15 +959,21 @@
       if (eventsRes.ok) {
         const eventsData = await eventsRes.json();
         const td = {};
+        const byKey = {};
         eventsData.turns.forEach((evt, i) => {
           const meta = evt.metadata || {};
           if (evt.prompt_tokens_est || evt.response_tokens_est || meta.dispatch_mode) {
             td[i] = evt;
+            const key = turnEventKey(evt.author, evt.display_ts);
+            if (!byKey[key]) byKey[key] = [];
+            byKey[key].push(evt);
           }
         });
+        if (Object.keys(byKey).length > 0) td.byKey = byKey;
         if (Object.keys(td).length > 0) tokenData = td;
       }
       renderTurns(turns, tokenData);
+      loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
     } catch (e) {
       console.error('Failed to fetch chat:', e);
     }
@@ -1265,6 +1313,7 @@
         } else if (msg.type === 'status') {
           latestStatus = msg;
           updateStatus(msg);
+          loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
         } else if (msg.type === 'trace_update') {
           const traceEvent = msg.event || {};
           latestTraceEvents.push(traceEvent);
@@ -1998,6 +2047,9 @@
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+    setInterval(() => {
+      loadSessions().catch(() => {});
+    }, 3000);
   }
 
   init();

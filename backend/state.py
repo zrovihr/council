@@ -15,7 +15,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek")
-STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases")
+STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui")
 SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -45,6 +45,7 @@ def default_session_state() -> dict:
         "providers": {},
         "api_keys": {},
         "aliases": {},
+        "ui": {},
     }
 
 
@@ -392,6 +393,63 @@ class Session:
             "session_dir": str(self.session_dir),
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
+            "activity": self.activity_summary(),
+        }
+
+    def event_line_count(self) -> int:
+        if not self.events_path.exists():
+            return 0
+        return sum(
+            1
+            for line in self.events_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+            if line.strip()
+        )
+
+    def mark_read(self) -> None:
+        ui = self.state.setdefault("ui", {})
+        ui["read_event_line"] = self.event_line_count()
+        self.save_state()
+
+    def unread_finished_count(self) -> int:
+        ui = self.state.get("ui") if isinstance(self.state, dict) else {}
+        try:
+            read_line = int((ui or {}).get("read_event_line") or 0)
+        except (TypeError, ValueError):
+            read_line = 0
+        unread = 0
+        if not self.events_path.exists():
+            return unread
+        for idx, line in enumerate(
+            self.events_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines(),
+            start=1,
+        ):
+            if idx <= read_line or not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("kind") == "agent_turn":
+                unread += 1
+        return unread
+
+    def activity_summary(self) -> dict:
+        running = len(self.active_dispatches)
+        if not running and self.current_dispatch:
+            running = 1
+        queued = len(self.dispatch_queue)
+        unread_finished = self.unread_finished_count()
+        return {
+            "running": running,
+            "queued": queued,
+            "unread_finished": unread_finished,
+            "total_pending": running + queued + unread_finished,
         }
 
     def effective_config(self) -> dict:
@@ -913,7 +971,6 @@ class SessionRegistry:
 
     def set_active(self, session_id: str) -> Session:
         session = self.get(session_id)
-        session.touch()
         self.active_session_id = session_id
         self.save_registry()
         return session

@@ -274,6 +274,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.get("/api/sessions/{session_id}/chat")
     async def get_chat(session_id: str):
         session = _get_session(registry, session_id)
+        session.mark_read()
         if session.chat_path.exists():
             return {"text": session.chat_path.read_text(encoding="utf-8", errors="replace")}
         return {"text": ""}

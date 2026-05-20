@@ -200,6 +200,44 @@ body {
   white-space: nowrap;
 }
 
+.session-counts {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 3px;
+}
+
+.session-count {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.session-count.running {
+  background: rgba(96,165,250,0.13);
+  border-color: rgba(96,165,250,0.45);
+  color: #bfdbfe;
+}
+
+.session-count.queued {
+  background: rgba(251,191,36,0.13);
+  border-color: rgba(251,191,36,0.45);
+  color: #fde68a;
+}
+
+.session-count.unread {
+  background: rgba(52,211,153,0.13);
+  border-color: rgba(52,211,153,0.45);
+  color: #bbf7d0;
+}
+
 .session-delete {
   color: var(--text-dim);
   flex-shrink: 0;
