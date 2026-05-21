@@ -2,7 +2,7 @@
 
 import re
 
-AGENTS = ("claude", "codex", "deepseek")
+AGENTS = ("claude", "codex", "deepseek", "hermes")
 DEFAULT_ALIASES = {agent: agent for agent in AGENTS}
 FENCED_CODE_RE = re.compile(r"(```|~~~).*?\1", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`+[^`\n]*`+")

@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-AGENTS = ["claude", "codex", "deepseek"]
+AGENTS = ["claude", "codex", "deepseek", "hermes"]
 
 SKIP_DIRS = {
     ".git", "Library", "Temp", "Logs", "obj", "Build", "Builds",

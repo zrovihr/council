@@ -60,11 +60,12 @@
         <button class="agent-btn claude" type="button" data-agent="claude">@claude</button>
         <button class="agent-btn codex" type="button" data-agent="codex">@codex</button>
         <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
+        <button class="agent-btn hermes" type="button" data-agent="hermes">@hermes</button>
       </div>
       <div id="composer">
         <div id="msg-editor">
           <div id="msg-highlights" aria-hidden="true"></div>
-          <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek activates that agent. Use @@ to reply to the last agent."></textarea>
+          <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek / @hermes activates that agent. Use @@ to reply to the last agent."></textarea>
         </div>
       </div>
       <div id="send-actions">
@@ -93,12 +94,13 @@
     <div id="help-title">About Council</div>
     <div id="help-body">
       <h4>What is Council?</h4>
-      <p>Council is a local multi-agent chat orchestrator. You talk to Claude, Codex, and Deepseek in a shared conversation. Each agent runs as a subprocess on your machine with filesystem access to your project. Mention an agent with <code>@claude</code>, <code>@codex</code>, or <code>@deepseek</code> to dispatch them &mdash; plain names without <code>@</code> are just references.</p>
+      <p>Council is a local multi-agent chat orchestrator. You talk to Claude, Codex, Deepseek, and Hermes in a shared conversation. CLI agents run as subprocesses on your machine with filesystem access to your project; Hermes routes through its local API server. Mention an agent with <code>@claude</code>, <code>@codex</code>, <code>@deepseek</code>, or <code>@hermes</code> to dispatch them &mdash; plain names without <code>@</code> are just references.</p>
 
       <h4>Agent roles</h4>
       <p><code>@claude</code> &mdash; primary reasoning and planning. Good for architecture, debugging, and complex tasks.</p>
       <p><code>@codex</code> &mdash; fast implementation and refactoring. Excels at writing and editing code.</p>
       <p><code>@deepseek</code> &mdash; bounded analysis and support tasks. Handles research, verification, and small fixes.</p>
+      <p><code>@hermes</code> &mdash; routes the turn through the configured Hermes API session key.</p>
 
       <h4>Memory separation</h4>
       <p>Each agent has its own <strong>private effort memory</strong> stored under <code>agent-memory/&lt;agent&gt;/</code>. This memory is visible only to that agent across runs &mdash; it contains partial work, prior output, and continuity notes. The shared chat log (<code>chat.md</code>) is the single source of truth for decisions visible to everyone. Agents also receive project context from your <code>AGENTS.md</code> or <code>CLAUDE.md</code>.</p>

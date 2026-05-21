@@ -12,6 +12,7 @@
   --claude: #7dd3fc;
   --codex: #c4b5fd;
   --deepseek: #fdba74;
+  --hermes: #86efac;
   --you: #ffffff;
   --summarizer: #a3a3a3;
   --system: #6b7280;
@@ -370,6 +371,9 @@ body {
 .trace-agent.deepseek {
   color: var(--deepseek);
 }
+.trace-agent.hermes {
+  color: var(--hermes);
+}
 
 .trace-agent.you {
   color: var(--you);
@@ -487,6 +491,7 @@ body {
 .agent-model.claude { border-color: rgba(125,211,252,0.35); }
 .agent-model.codex { border-color: rgba(196,181,253,0.35); }
 .agent-model.deepseek { border-color: rgba(253,186,116,0.35); }
+.agent-model.hermes { border-color: rgba(134,239,172,0.35); }
 
 #status-indicator {
   font-size: 12px;
@@ -940,6 +945,7 @@ body {
 .turn-avatar.you        { background: rgba(255,255,255,0.18); color: var(--you); }
 .turn-avatar.summarizer { background: rgba(163,163,163,0.18); color: var(--summarizer); }
 .turn-avatar.system     { background: rgba(107,114,128,0.18); color: var(--system); }
+.turn-avatar.hermes     { background: rgba(134,239,172,0.14); color: var(--hermes); }
 
 .turn-avatar.claude,
 .turn-avatar.codex,
@@ -958,6 +964,7 @@ body {
 .turn-author.claude     { color: var(--claude); }
 .turn-author.codex      { color: var(--codex); }
 .turn-author.deepseek   { color: var(--deepseek); }
+.turn-author.hermes     { color: var(--hermes); }
 .turn-author.summarizer { color: var(--summarizer); }
 .turn-author.system     { color: var(--system); }
 
@@ -1331,6 +1338,7 @@ body {
 .turn-body .mention.claude { color: var(--claude); }
 .turn-body .mention.codex { color: var(--codex); }
 .turn-body .mention.deepseek { color: var(--deepseek); }
+.turn-body .mention.hermes { color: var(--hermes); }
 
 .turn-body .file-link {
   color: #60a5fa;
@@ -1401,6 +1409,7 @@ body {
 .agent-btn.claude { color: var(--claude); }
 .agent-btn.codex { color: var(--codex); }
 .agent-btn.deepseek { color: var(--deepseek); }
+.agent-btn.hermes { color: var(--hermes); }
 
 #composer {
   flex: 1;
@@ -1467,6 +1476,7 @@ body {
 #msg-highlights .mention.claude { color: var(--claude); }
 #msg-highlights .mention.codex { color: var(--codex); }
 #msg-highlights .mention.deepseek { color: var(--deepseek); }
+#msg-highlights .mention.hermes { color: var(--hermes); }
 #msg-highlights .md-code {
   color: #facc15;
   background: rgba(250,204,21,0.08);

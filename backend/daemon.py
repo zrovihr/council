@@ -8,11 +8,12 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .state import Session, SessionRegistry
+from .state import AGENTS, Session, SessionRegistry
 from .prompt_builder import build_prompt
 from .provenance import build_tool_provenance
 from .agent_memory import write_agent_memory
 from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
+                            dispatch_hermes,
                             DispatchResult, estimate_tokens)
 from .summarizer import compact_chat
 from .mentions import find_agent_mentions, neutralize_agent_mentions
@@ -44,6 +45,15 @@ def _get_model_deepseek(config: dict) -> str:
     return config.get("models", {}).get(
         "deepseek_pro", "deepseek/deepseek-v4-pro"
     )
+
+
+def _get_hermes_config(config: dict) -> dict[str, str]:
+    dispatch = config.get("dispatch", {}) or {}
+    hermes = dispatch.get("hermes", {}) if isinstance(dispatch.get("hermes"), dict) else {}
+    return {
+        "base_url": str(hermes.get("base_url") or "http://127.0.0.1:8642/v1"),
+        "session_key": str(hermes.get("session_key") or ""),
+    }
 
 
 def _agent_env(config: dict, agent: str) -> dict[str, str]:
@@ -141,7 +151,7 @@ def _save_dispatch_ledger(path: Path, dispatched: set[str]) -> None:
 
 def _turn_mentions(turn: dict, aliases: dict | None = None) -> list[str]:
     author = turn["author"]
-    if author in ("you", "claude", "codex", "deepseek"):
+    if author == "you" or author in AGENTS:
         return find_agent_mentions(turn["body"], aliases)
     return []
 
@@ -166,7 +176,7 @@ def _request_still_valid(
         author = turn["author"]
         if source == "user" and author != "you":
             continue
-        if source == "agent" and author not in ("claude", "codex", "deepseek"):
+        if source == "agent" and author not in AGENTS:
             continue
         return request["agent"] in _turn_mentions(turn, aliases)
     return False
@@ -191,7 +201,7 @@ def _seed_dispatch_ledger(
 
 def _has_later_response(turns: list[dict], turn_index: int) -> bool:
     for later in turns[turn_index + 1:]:
-        if later["author"] in ("claude", "codex", "deepseek", "system"):
+        if later["author"] in (*AGENTS, "system"):
             return True
     return False
 
@@ -405,7 +415,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         source = None
                         if author == "you":
                             source = "user"
-                        elif author in ("claude", "codex", "deepseek"):
+                        elif author in AGENTS:
                             source = "agent"
                         if source:
                             for mention in _turn_mentions(turn, aliases):
@@ -495,11 +505,18 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     f"{binary} --dangerously-skip-permissions "
                     f"--add-dir {registry.council_root} -p"
                 )
-            else:
+            elif mention == "codex":
                 runtime = f"{binary} exec (model={model or 'CLI default'})"
                 command_hint = (
                     f"{binary} exec --dangerously-bypass-approvals-and-sandbox "
                     "--output-last-message <file> -"
+                )
+            else:
+                hermes_cfg = _get_hermes_config(config)
+                runtime = f"Hermes API (model={model or 'hermes-agent'})"
+                command_hint = (
+                    f"POST {hermes_cfg['base_url'].rstrip('/')}/chat/completions "
+                    "with X-Hermes-Session-Key"
                 )
             await session.add_trace(
                 mention,
@@ -564,6 +581,18 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         effort=effort,
                         on_output=trace_opencode_output,
                         env=agent_env,
+                    )
+                if mention == "hermes":
+                    hermes_cfg = _get_hermes_config(config)
+                    return await dispatch_hermes(
+                        prompt,
+                        session.project_root,
+                        _agent_timeout(config, mention),
+                        model=model or "hermes-agent",
+                        base_url=hermes_cfg["base_url"],
+                        api_key=str(config.get("api_keys", {}).get("hermes") or ""),
+                        session_key=hermes_cfg["session_key"],
+                        on_output=trace_agent_output,
                     )
                 raise ValueError(f"Unknown agent: {mention}")
 

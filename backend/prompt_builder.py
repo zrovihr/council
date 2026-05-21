@@ -4,6 +4,7 @@ import re
 import json
 from pathlib import Path
 from .agent_memory import read_agent_memory
+from .mentions import AGENTS
 from .project import read_project_rules
 
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +28,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
     attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
         agent: str(aliases.get(agent) or agent).strip().lstrip("@")
-        for agent in ("claude", "codex", "deepseek")
+        for agent in AGENTS
     }
     mention_list = " / ".join(f"@{name}" for name in mention_names.values())
     plain_list = ", ".join(mention_names.values())
@@ -262,7 +263,7 @@ def _sanitize_pasted_attachments(text: str) -> str:
 def _normalize_attachment_policy(target_agent: str, attachment_policy: str | None) -> str:
     policy = (attachment_policy or "").strip().lower()
     if not policy:
-        policy = "path-visible" if target_agent in {"claude", "codex"} else "placeholder"
+        policy = "placeholder" if target_agent == "deepseek" else "path-visible"
     if policy not in {"placeholder", "path-visible"}:
         return "placeholder"
     return policy

@@ -14,10 +14,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-AGENTS = ("claude", "codex", "deepseek")
+AGENTS = ("claude", "codex", "deepseek", "hermes")
 STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui")
 SENSITIVE_SECTIONS = {"api_keys"}
-SECRET_KEYS = ("claude", "codex", "deepseek", "openrouter", "deepseek_flash")
+SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -154,6 +154,7 @@ def _provider_for(providers: dict, agent: str) -> str:
         "claude": "claude_cli",
         "codex": "codex_cli",
         "deepseek": "opencode",
+        "hermes": "hermes_api",
     }
     return str(providers.get(agent) or defaults.get(agent) or "custom")
 
@@ -223,6 +224,20 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "flash_model": models.get("deepseek_flash", "deepseek/deepseek-v4-flash"),
             "flash_key_saved": bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek")),
             "note": "Configured in Council config.toml or this session.",
+        },
+        "hermes": {
+            "label": "Hermes",
+            "runtime": "Hermes API",
+            "provider": _provider_for(providers, "hermes"),
+            "alias": str(aliases.get("hermes") or "hermes"),
+            "binary": "",
+            "model": models.get("hermes", "hermes-agent"),
+            "effort": efforts.get("hermes", ""),
+            "role": roles.get("hermes", ""),
+            "model_options": model_options.get("hermes", []),
+            "effort_options": effort_options.get("hermes", []),
+            "api_key_saved": _key_saved(api_keys, "hermes", _provider_for(providers, "hermes")),
+            "note": "Routes through Hermes api_server, usually http://localhost:8642/v1.",
         },
     }
 

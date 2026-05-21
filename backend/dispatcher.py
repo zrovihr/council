@@ -7,9 +7,14 @@ import logging
 import tempfile
 import sys
 import os
+import json
+import hashlib
+import urllib.error
+import urllib.request
 from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -543,3 +548,115 @@ async def dispatch_deepseek(prompt: str, project_root: Path,
     text = _sanitize_agent_output(cleaned, strip_thinking=True)
     text = _trim_opencode_progress_output(text)
     return DispatchResult(text=text, usage=_merge_usage(stdout, cleaned, text))
+
+
+def _normalize_hermes_base_url(base_url: str) -> str:
+    value = (base_url or "http://127.0.0.1:8642/v1").strip().rstrip("/")
+    if not value:
+        value = "http://127.0.0.1:8642/v1"
+    if not value.endswith("/v1"):
+        value = value + "/v1"
+    return value
+
+
+def _hermes_session_key(session_key: str, project_root: Path) -> str:
+    key = (session_key or "").strip()
+    if key:
+        return key
+    digest = hashlib.sha256(str(project_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"council:{digest}"
+
+
+def _build_hermes_chat_request(
+    prompt: str,
+    project_root: Path,
+    model: str = "hermes-agent",
+    base_url: str = "http://127.0.0.1:8642/v1",
+    api_key: str = "",
+    session_key: str = "",
+) -> tuple[str, dict, dict]:
+    url = urljoin(_normalize_hermes_base_url(base_url) + "/", "chat/completions")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Hermes-Session-Key": _hermes_session_key(session_key, project_root),
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": model or "hermes-agent",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "stream": False,
+    }
+    return url, headers, payload
+
+
+def _post_hermes_chat(url: str, headers: dict, payload: dict, timeout: int) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    request_timeout = None if timeout <= 0 else timeout
+    try:
+        with urllib.request.urlopen(req, timeout=request_timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Hermes API returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Hermes API request failed: {exc.reason}") from exc
+    return json.loads(body)
+
+
+def _extract_hermes_response(data: dict) -> DispatchResult:
+    choices = data.get("choices")
+    text = ""
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+                text = "\n".join(parts)
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return DispatchResult(text=_sanitize_agent_output(text), usage=_merge_usage(json.dumps(usage)))
+
+
+async def dispatch_hermes(
+    prompt: str,
+    project_root: Path,
+    timeout: int = 300,
+    model: str = "hermes-agent",
+    base_url: str = "http://127.0.0.1:8642/v1",
+    api_key: str = "",
+    session_key: str = "",
+    on_output: Callable[[str, str], Awaitable[None]] | None = None,
+) -> DispatchResult:
+    url, headers, payload = _build_hermes_chat_request(
+        prompt,
+        project_root,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        session_key=session_key,
+    )
+    if on_output:
+        safe_headers = dict(headers)
+        if "Authorization" in safe_headers:
+            safe_headers["Authorization"] = "Bearer ***"
+        await on_output(
+            "http request",
+            f"POST {url} headers={safe_headers} prompt_chars={len(prompt)}",
+        )
+    data = await asyncio.to_thread(_post_hermes_chat, url, headers, payload, timeout)
+    result = _extract_hermes_response(data)
+    if on_output:
+        await on_output("http response", f"response_chars={len(result.text)}")
+    return result

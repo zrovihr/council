@@ -60,7 +60,7 @@
   let activeSessionId = null;
   let editState = null;
   let openTurnMenu = null;
-  const AGENT_IDS = ['claude', 'codex', 'deepseek'];
+  const AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
   const ATTACHMENT_POLICY_OPTIONS = [
     ['path-visible', 'Path visible'],
     ['placeholder', 'Placeholder only'],
@@ -199,7 +199,8 @@
       const header = document.createElement('div');
       header.className = 'turn-header';
 
-      const avatar = document.createElement(turn.author === 'claude' || turn.author === 'codex' || turn.author === 'deepseek' ? 'img' : 'span');
+      const hasAgentIcon = ['claude', 'codex', 'deepseek'].includes(turn.author);
+      const avatar = document.createElement(hasAgentIcon ? 'img' : 'span');
       avatar.className = `turn-avatar ${turn.author}`;
       if (avatar.tagName === 'IMG') {
         avatar.src = `/icons/${turn.author}.png`;
@@ -1669,6 +1670,7 @@
     ['claude_cli', 'Claude CLI'],
     ['codex_cli', 'Codex CLI'],
     ['opencode', 'OpenCode'],
+    ['hermes_api', 'Hermes API'],
     ['openrouter', 'OpenRouter'],
     ['deepseek_api', 'Deepseek API'],
     ['custom', 'Custom'],
@@ -1684,7 +1686,7 @@
       option.textContent = label;
       select.appendChild(option);
     }
-    select.value = value || (agentId === 'claude' ? 'claude_cli' : agentId === 'codex' ? 'codex_cli' : 'opencode');
+    select.value = value || (agentId === 'claude' ? 'claude_cli' : agentId === 'codex' ? 'codex_cli' : agentId === 'hermes' ? 'hermes_api' : 'opencode');
     select.addEventListener('change', () => {
       patchConfig({ providers: { [agentId]: select.value } });
     });
@@ -1716,7 +1718,7 @@
     const input = document.createElement('input');
     input.type = 'text';
     input.value = value || '';
-    input.placeholder = agentId === 'deepseek' ? 'deepseek/deepseek-v4-pro' : 'model id';
+    input.placeholder = agentId === 'deepseek' ? 'deepseek/deepseek-v4-pro' : agentId === 'hermes' ? 'hermes-agent' : 'model id';
     input.setAttribute('list', `model-options-${agentId}`);
     input.addEventListener('change', () => {
       patchConfig({ models: { [agentId]: input.value.trim() } });
@@ -1860,6 +1862,38 @@
       dispatchSection.appendChild(wrap);
     }
     configGrid.appendChild(dispatchSection);
+
+    const hermesDispatch = dispatchCfg && dispatchCfg.hermes || {};
+    const hermesSection = document.createElement('div');
+    hermesSection.className = 'config-section';
+    const hermesLabel = document.createElement('div');
+    hermesLabel.className = 'config-section-label';
+    hermesLabel.textContent = 'Hermes API';
+    hermesSection.appendChild(hermesLabel);
+
+    const hermesUrlWrap = document.createElement('label');
+    hermesUrlWrap.textContent = 'Base URL';
+    const hermesUrl = document.createElement('input');
+    hermesUrl.type = 'text';
+    hermesUrl.value = hermesDispatch.base_url || 'http://127.0.0.1:8642/v1';
+    hermesUrl.addEventListener('change', () => {
+      patchConfig({ dispatch: { hermes: { base_url: hermesUrl.value.trim() } } });
+    });
+    hermesUrlWrap.appendChild(hermesUrl);
+    hermesSection.appendChild(hermesUrlWrap);
+
+    const hermesSessionWrap = document.createElement('label');
+    hermesSessionWrap.textContent = 'Session key';
+    const hermesSessionKey = document.createElement('input');
+    hermesSessionKey.type = 'text';
+    hermesSessionKey.value = hermesDispatch.session_key || '';
+    hermesSessionKey.placeholder = 'auto from Council project';
+    hermesSessionKey.addEventListener('change', () => {
+      patchConfig({ dispatch: { hermes: { session_key: hermesSessionKey.value.trim() } } });
+    });
+    hermesSessionWrap.appendChild(hermesSessionKey);
+    hermesSection.appendChild(hermesSessionWrap);
+    configGrid.appendChild(hermesSection);
 
     const attachmentSection = document.createElement('div');
     attachmentSection.className = 'config-section config-attachment-section';
