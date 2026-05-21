@@ -1004,6 +1004,27 @@ body {
   color: #fbbf24;
 }
 
+.turn-status-badge {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 18px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
+
+.turn-status-badge.running {
+  background: rgba(56,189,248,0.10);
+  color: #7dd3fc;
+}
+
+.turn-status-badge.cancelled,
+.turn-status-badge.failed {
+  background: rgba(248,113,113,0.10);
+  color: #fca5a5;
+}
+
 .turn-more-wrap {
   display: none;
   margin-left: auto;

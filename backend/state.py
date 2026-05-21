@@ -329,6 +329,32 @@ def rebuild_chat_from_events(
     chat_path.write_text("".join(parts), encoding="utf-8")
 
 
+def _rewrite_event(events_path: Path, predicate, update) -> bool:
+    if not events_path.exists():
+        return False
+    lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    changed = False
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not predicate(event):
+            continue
+        updated = update(event)
+        lines[i] = json.dumps(updated or event, ensure_ascii=True)
+        changed = True
+        break
+    if changed:
+        events_path.write_text(
+            "\n".join(lines) + ("\n" if lines else ""),
+            encoding="utf-8",
+        )
+    return changed
+
+
 def _trace_time(event: dict) -> str:
     ts = str(event.get("ts") or "")
     if not ts:
@@ -602,6 +628,67 @@ class Session:
         with open(self.chat_path, "a", encoding="utf-8") as f:
             f.write(render_turn(author, body, display_ts))
         self.touch()
+
+    def reserve_agent_turn(
+        self,
+        request_id: str,
+        author: str,
+        text: str,
+        metadata: dict | None = None,
+    ) -> None:
+        reserve_metadata = {
+            "dispatch_request_id": request_id,
+            "dispatch_status": "running",
+            **(metadata or {}),
+        }
+        self.append_turn(author, text, metadata=reserve_metadata)
+
+    def update_reserved_agent_turn(
+        self,
+        request_id: str,
+        text: str | None = None,
+        metadata: dict | None = None,
+        usage: dict[str, int] | None = None,
+        status: str | None = None,
+    ) -> bool:
+        def matches(event: dict) -> bool:
+            meta = event.get("metadata") or {}
+            return (
+                event.get("kind") == "agent_turn"
+                and meta.get("dispatch_request_id") == request_id
+            )
+
+        def update(event: dict) -> dict:
+            meta = event.setdefault("metadata", {})
+            if text is not None:
+                event["text"] = text.rstrip()
+            if metadata:
+                meta.update(metadata)
+            if status:
+                meta["dispatch_status"] = status
+            if usage:
+                event["token_usage"] = usage
+            pt = meta.get("prompt_tokens_est")
+            rt = meta.get("response_tokens_est")
+            if pt:
+                event["prompt_tokens_est"] = pt
+            if rt:
+                event["response_tokens_est"] = rt
+            if usage and not pt and "prompt_tokens" in usage:
+                event["prompt_tokens_est"] = usage["prompt_tokens"]
+            if usage and not rt and "completion_tokens" in usage:
+                event["response_tokens_est"] = usage["completion_tokens"]
+            return event
+
+        changed = _rewrite_event(self.events_path, matches, update)
+        if changed:
+            rebuild_chat_from_events(
+                self.events_path,
+                self.chat_path,
+                self.compactions_path,
+            )
+            self.touch()
+        return changed
 
     async def broadcast_status(self):
         await self.broadcast({

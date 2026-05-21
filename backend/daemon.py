@@ -471,6 +471,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         captured_output_parts: list[str] = []
         dispatch_trace_events: list[dict] = []
         dispatch_task: asyncio.Task | None = None
+        reserved_turn = False
         try:
             role = _get_role(config, mention)
             prompt = build_prompt(
@@ -529,6 +530,18 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"role_chars={len(role)} "
                 f"cwd={session.project_root}",
             )
+            session.reserve_agent_turn(
+                request["id"],
+                mention,
+                "Dispatch started. Waiting for the agent's final response.",
+                metadata={
+                    "dispatch_mode": request.get("mode", "parallel"),
+                    "prompt_tokens_est": estimate_tokens(prompt),
+                    "tool_calls": [],
+                },
+            )
+            reserved_turn = True
+            await session.notify_chat_update()
 
             async def trace_agent_output(source: str, text: str):
                 captured_output_parts.append(f"[{source}]\n{text}")
@@ -542,6 +555,14 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     f"{source}",
                     text,
                 )
+                if reserved_turn:
+                    session.update_reserved_agent_turn(
+                        request["id"],
+                        metadata={
+                            "tool_calls": build_tool_provenance(dispatch_trace_events),
+                        },
+                    )
+                    await session.notify_chat_update()
 
             async def run_dispatch() -> DispatchResult:
                 if mention == "claude":
@@ -629,16 +650,30 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"{_format_usage(result.usage)} "
                 f"memory={_display_path(artifact_path, session.project_root)}",
             )
-            session.append_turn(
-                mention, response,
-                usage=result.usage,
-                metadata={
-                    "dispatch_mode": request.get("mode", "parallel"),
-                    "prompt_tokens_est": estimate_tokens(prompt),
-                    "response_tokens_est": estimate_tokens(response),
-                    "tool_calls": build_tool_provenance(dispatch_trace_events),
-                },
-            )
+            if reserved_turn:
+                session.update_reserved_agent_turn(
+                    request["id"],
+                    text=response,
+                    usage=result.usage,
+                    status="completed",
+                    metadata={
+                        "dispatch_mode": request.get("mode", "parallel"),
+                        "prompt_tokens_est": estimate_tokens(prompt),
+                        "response_tokens_est": estimate_tokens(response),
+                        "tool_calls": build_tool_provenance(dispatch_trace_events),
+                    },
+                )
+            else:
+                session.append_turn(
+                    mention, response,
+                    usage=result.usage,
+                    metadata={
+                        "dispatch_mode": request.get("mode", "parallel"),
+                        "prompt_tokens_est": estimate_tokens(prompt),
+                        "response_tokens_est": estimate_tokens(response),
+                        "tool_calls": build_tool_provenance(dispatch_trace_events),
+                    },
+                )
             await session.notify_chat_update()
 
             if chat_path.exists():
@@ -676,6 +711,16 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 project_root=session.project_root,
             )
             await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
+            if reserved_turn:
+                session.update_reserved_agent_turn(
+                    request["id"],
+                    text="Dispatch cancelled by user before a final response.",
+                    status="cancelled",
+                    metadata={
+                        "dispatch_mode": request.get("mode", "parallel"),
+                        "tool_calls": build_tool_provenance(dispatch_trace_events),
+                    },
+                )
             safe_body = neutralize_agent_mentions(
                 f"agent {mention} dispatch cancelled by user. Partial effort saved for @{mention}: "
                 f"`{_display_path(artifact_path, session.project_root)}`"
@@ -694,6 +739,16 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             )
             await session.add_trace(mention, "dispatch failed", str(e))
             safe_reason = neutralize_agent_mentions(str(e)).strip()
+            if reserved_turn:
+                session.update_reserved_agent_turn(
+                    request["id"],
+                    text=f"Dispatch failed before a final response: {safe_reason}",
+                    status="failed",
+                    metadata={
+                        "dispatch_mode": request.get("mode", "parallel"),
+                        "tool_calls": build_tool_provenance(dispatch_trace_events),
+                    },
+                )
             session.append_turn(
                 "system",
                 f"error: agent {mention} dispatch failed: {safe_reason}\n\n"

@@ -61,6 +61,7 @@ def _apply_env_overrides(config: dict, env: dict[str, str]) -> None:
         "OPENROUTER_API_KEY": ("api_keys", "openrouter", str),
         "DEEPSEEK_API_KEY": ("api_keys", "deepseek", str),
         "DEEPSEEK_FLASH_API_KEY": ("api_keys", "deepseek_flash", str),
+        "COUNCIL_HERMES_API_KEY": ("api_keys", "hermes", str),
         "COUNCIL_PORT": ("server", "port", int),
         "COUNCIL_HOST": ("server", "host", str),
     }
@@ -71,6 +72,16 @@ def _apply_env_overrides(config: dict, env: dict[str, str]) -> None:
         if cast is int:
             value = int(value)
         config.setdefault(section, {})[key] = value
+
+
+def _merge_config(base: dict, override: dict) -> dict:
+    """Recursively merge local config overrides into the loaded defaults."""
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _merge_config(base[key], value)
+        else:
+            base[key] = value
+    return base
 
 
 def _check_cli_available(name: str) -> bool:
@@ -171,6 +182,7 @@ def _run_setup_wizard(config: dict) -> bool:
     _append_env(lines, "OPENROUTER_API_KEY", _prompt_secret("OpenRouter API key"))
     _append_env(lines, "DEEPSEEK_API_KEY", _prompt_secret("Deepseek API key"))
     _append_env(lines, "DEEPSEEK_FLASH_API_KEY", _prompt_secret("Deepseek Flash API key"))
+    _append_env(lines, "COUNCIL_HERMES_API_KEY", _prompt_secret("Hermes API server key"))
     lines.append("")
 
     lines.append("# ---- Binary paths ----")
@@ -213,6 +225,10 @@ def main():
     config_path = APP_DIR / "config.toml"
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
+    local_config_path = APP_DIR / "config.local.toml"
+    if local_config_path.is_file():
+        with open(local_config_path, "rb") as f:
+            _merge_config(config, tomllib.load(f))
 
     env_path = APP_DIR / ".env"
 

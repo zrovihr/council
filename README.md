@@ -105,7 +105,14 @@ OPENAI_API_KEY
 OPENROUTER_API_KEY
 DEEPSEEK_API_KEY
 DEEPSEEK_FLASH_API_KEY
+COUNCIL_HERMES_API_KEY
 ```
+
+For Hermes session isolation, set `API_SERVER_KEY` in the Hermes `.env`, set
+the same value as `COUNCIL_HERMES_API_KEY` in Council's `.env` or as
+`api_keys.hermes` in `config.local.toml`, then restart Hermes with
+`hermes gateway run --replace`. Council also loads gitignored
+`config.local.toml` after `config.toml` for local-only overrides.
 
 Council passes saved keys to agent subprocesses as environment variables. The current dispatch path still uses the configured local CLIs (`claude`, `codex exec`, `opencode`) underneath; direct raw HTTP dispatch for arbitrary OpenRouter or Deepseek API models is separate future work.
 

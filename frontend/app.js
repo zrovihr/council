@@ -241,6 +241,17 @@
           : 'Mentioned agents were started immediately when possible.';
         header.appendChild(modeBadge);
       }
+      if (td && td.metadata && td.metadata.dispatch_status && td.metadata.dispatch_status !== 'completed') {
+        const statusBadge = document.createElement('span');
+        statusBadge.className = `turn-status-badge ${td.metadata.dispatch_status}`;
+        statusBadge.textContent = td.metadata.dispatch_status === 'running'
+          ? 'Running'
+          : td.metadata.dispatch_status === 'cancelled'
+            ? 'Cancelled'
+            : 'Failed';
+        statusBadge.title = 'Reserved agent chat slot status.';
+        header.appendChild(statusBadge);
+      }
       if (td && turn.author !== 'you') {
         const inTok = formatTokenCount(td.prompt_tokens_est);
         const outTok = formatTokenCount(td.response_tokens_est);

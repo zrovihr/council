@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -604,8 +604,24 @@ def _post_hermes_chat(url: str, headers: dict, payload: dict, timeout: int) -> d
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 403 and "X-Hermes-Session-Key requires API key authentication" in detail:
+            raise RuntimeError(
+                "Hermes API rejected the session key because API key authentication "
+                "is not configured on both sides. Set API_SERVER_KEY in Hermes, set "
+                "the same value in Council as COUNCIL_HERMES_API_KEY or "
+                "api_keys.hermes, then restart Hermes."
+            ) from exc
         raise RuntimeError(f"Hermes API returned HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if isinstance(exc.reason, ConnectionRefusedError):
+            raise RuntimeError(
+                f"Hermes API server is not listening on {host}:{port}. "
+                "Set API_SERVER_ENABLED=true in Hermes and restart with "
+                "`hermes gateway run --replace`."
+            ) from exc
         raise RuntimeError(f"Hermes API request failed: {exc.reason}") from exc
     return json.loads(body)
 
