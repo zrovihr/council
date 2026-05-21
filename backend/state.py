@@ -600,7 +600,7 @@ class Session:
         kind: str | None = None,
         usage: dict[str, int] | None = None,
         metadata: dict | None = None,
-    ) -> None:
+    ) -> str:
         display_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         body = text.rstrip()
         event_kind = kind or ("user_turn" if author == "you" else "agent_turn")
@@ -628,6 +628,7 @@ class Session:
         with open(self.chat_path, "a", encoding="utf-8") as f:
             f.write(render_turn(author, body, display_ts))
         self.touch()
+        return f"## [@{author}] {display_ts}"
 
     def reserve_agent_turn(
         self,
@@ -635,13 +636,13 @@ class Session:
         author: str,
         text: str,
         metadata: dict | None = None,
-    ) -> None:
+    ) -> str:
         reserve_metadata = {
             "dispatch_request_id": request_id,
             "dispatch_status": "running",
             **(metadata or {}),
         }
-        self.append_turn(author, text, metadata=reserve_metadata)
+        return self.append_turn(author, text, metadata=reserve_metadata)
 
     def update_reserved_agent_turn(
         self,

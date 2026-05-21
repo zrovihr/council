@@ -489,6 +489,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         dispatch_trace_events: list[dict] = []
         dispatch_task: asyncio.Task | None = None
         reserved_turn = False
+        response_header = ""
         try:
             role = _get_role(config, mention)
             prompt = build_prompt(
@@ -549,7 +550,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"role_chars={len(role)} "
                 f"cwd={session.project_root}",
             )
-            session.reserve_agent_turn(
+            response_header = session.reserve_agent_turn(
                 request["id"],
                 mention,
                 "Dispatch started. Waiting for the agent's final response.",
@@ -684,7 +685,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     },
                 )
             else:
-                session.append_turn(
+                response_header = session.append_turn(
                     mention, response,
                     usage=result.usage,
                     metadata={
@@ -694,6 +695,19 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         "tool_calls": build_tool_provenance(dispatch_trace_events),
                     },
                 )
+            if response_header:
+                for chained_mention in _turn_mentions(
+                    {"body": response},
+                    session.effective_config().get("aliases", {}),
+                ):
+                    if chained_mention == mention:
+                        continue
+                    await enqueue_mention(
+                        chained_mention,
+                        "agent",
+                        response_header,
+                        "queued",
+                    )
             await session.notify_chat_update()
 
             if chat_path.exists():
