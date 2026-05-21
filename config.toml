@@ -62,8 +62,13 @@ deepseek = "placeholder"
 hermes = "path-visible"
 
 [dispatch.hermes]
+# OpenAI-compatible chat completions base URL for the Hermes slot.
+# Keep the default for Hermes, or point this at another compatible gateway.
 base_url = "http://127.0.0.1:8642/v1"
+# Leave blank to derive an isolated Council project key automatically.
 session_key = ""
+# Leave blank to disable a session header for non-Hermes compatible gateways.
+session_header = "X-Hermes-Session-Key"
 
 [compact]
 auto_threshold_lines = 2000

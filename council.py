@@ -53,15 +53,20 @@ def _apply_env_overrides(config: dict, env: dict[str, str]) -> None:
         "COUNCIL_MODEL_CODEX": ("models", "codex", str),
         "COUNCIL_MODEL_DEEPSEEK_PRO": ("models", "deepseek_pro", str),
         "COUNCIL_MODEL_DEEPSEEK_FLASH": ("models", "deepseek_flash", str),
+        "COUNCIL_MODEL_HERMES": ("models", "hermes", str),
         "COUNCIL_PROVIDER_CLAUDE": ("providers", "claude", str),
         "COUNCIL_PROVIDER_CODEX": ("providers", "codex", str),
         "COUNCIL_PROVIDER_DEEPSEEK": ("providers", "deepseek", str),
+        "COUNCIL_PROVIDER_HERMES": ("providers", "hermes", str),
         "ANTHROPIC_API_KEY": ("api_keys", "claude", str),
         "OPENAI_API_KEY": ("api_keys", "codex", str),
         "OPENROUTER_API_KEY": ("api_keys", "openrouter", str),
         "DEEPSEEK_API_KEY": ("api_keys", "deepseek", str),
         "DEEPSEEK_FLASH_API_KEY": ("api_keys", "deepseek_flash", str),
         "COUNCIL_HERMES_API_KEY": ("api_keys", "hermes", str),
+        "COUNCIL_HERMES_BASE_URL": ("dispatch", "hermes.base_url", str),
+        "COUNCIL_HERMES_SESSION_KEY": ("dispatch", "hermes.session_key", str),
+        "COUNCIL_HERMES_SESSION_HEADER": ("dispatch", "hermes.session_header", str),
         "COUNCIL_PORT": ("server", "port", int),
         "COUNCIL_HOST": ("server", "host", str),
     }
@@ -71,7 +76,13 @@ def _apply_env_overrides(config: dict, env: dict[str, str]) -> None:
             continue
         if cast is int:
             value = int(value)
-        config.setdefault(section, {})[key] = value
+        target = config.setdefault(section, {})
+        if "." in key:
+            first, _, rest = key.partition(".")
+            target = target.setdefault(first, {})
+            target[rest] = value
+        else:
+            target[key] = value
 
 
 def _merge_config(base: dict, override: dict) -> dict:
@@ -154,6 +165,7 @@ def _run_setup_wizard(config: dict) -> bool:
     _append_env(lines, "COUNCIL_PROVIDER_CLAUDE", _prompt("claude_cli", "Claude provider"))
     _append_env(lines, "COUNCIL_PROVIDER_CODEX", _prompt("codex_cli", "Codex provider"))
     _append_env(lines, "COUNCIL_PROVIDER_DEEPSEEK", _prompt("opencode", "Deepseek provider"))
+    _append_env(lines, "COUNCIL_PROVIDER_HERMES", _prompt("hermes_api", "Hermes slot provider"))
     lines.append("")
 
     lines.append("# ---- Model IDs ----")
@@ -173,6 +185,23 @@ def _run_setup_wizard(config: dict) -> bool:
         config.get("models", {}).get("deepseek_flash", "deepseek/deepseek-v4-flash"),
         "Deepseek Flash summarizer model",
     ))
+    _append_env(lines, "COUNCIL_MODEL_HERMES", _prompt(
+        config.get("models", {}).get("hermes", "hermes-agent"),
+        "Hermes slot model",
+    ))
+    lines.append("")
+
+    lines.append("# ---- Hermes/API bridge ----")
+    hermes_dispatch = config.get("dispatch", {}).get("hermes", {})
+    _append_env(lines, "COUNCIL_HERMES_BASE_URL", _prompt(
+        hermes_dispatch.get("base_url", "http://127.0.0.1:8642/v1"),
+        "Hermes/API base URL",
+    ))
+    _append_env(lines, "COUNCIL_HERMES_SESSION_HEADER", _prompt(
+        hermes_dispatch.get("session_header", "X-Hermes-Session-Key"),
+        "Session header (blank disables)",
+    ))
+    lines.append("# Set COUNCIL_HERMES_SESSION_KEY manually when binding to an existing Hermes channel.")
     lines.append("")
 
     lines.append("# ---- API keys ----")

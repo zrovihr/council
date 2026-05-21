@@ -2,7 +2,7 @@
 
 <img alt="Council logo" src="thecouncil_logo_small.png" align="right" width="120" />
 
-Local browser-based multi-agent chat. User talks to configurable agent slots through Council-owned sessions stored project-locally under `<project>/.council/sessions/`. The default slots are Claude, Codex, and Deepseek, but the visible mention names, providers, models, roles, and tokens can be changed from the Config panel. Each session has its own project root, chat transcript, event log, compaction records, private agent memory, and config overrides.
+Local browser-based multi-agent chat. User talks to configurable agent slots through Council-owned sessions stored project-locally under `<project>/.council/sessions/`. The default slots are Claude, Codex, Deepseek, and Hermes, but the visible mention names, providers, models, roles, endpoints, and tokens can be changed from the Config panel. Each session has its own project root, chat transcript, event log, compaction records, private agent memory, and config overrides.
 
 <img alt="Council screenshot" src="ss.png" width="900" />
 
@@ -50,9 +50,10 @@ The default mentions are:
 @claude
 @codex
 @deepseek
+@hermes
 ```
 
-You can rename these in Config. For example, the internal `claude` slot can be activated by `@sonnet`, while the session data and memory folder still remain under `claude` for compatibility. Canonical mentions (`@claude`, `@codex`, `@deepseek`) continue to work.
+You can rename these in Config. For example, the internal `claude` slot can be activated by `@sonnet`, while the session data and memory folder still remain under `claude` for compatibility. Canonical mentions (`@claude`, `@codex`, `@deepseek`, `@hermes`) continue to work.
 
 ## Session Storage
 
@@ -83,9 +84,12 @@ The Config panel supports:
 - Mention name, such as `@sonnet`, `@gpt`, or `@flash`
 - Write-only API token fields
 - Separate Deepseek Flash summarizer model and token
+- Hermes/API bridge settings: OpenAI-compatible base URL, session key, and session header
 - Dispatch limits such as timeout, max prompt size, and chain depth
 
 API token fields are disabled for CLI-managed providers (`claude_cli`, `codex_cli`, `opencode`) because those CLIs handle their own authentication. Token fields are enabled for API-style providers such as `openrouter`, `deepseek_api`, and `custom`.
+
+The Hermes slot defaults to `hermes_api` at `http://127.0.0.1:8642/v1`, but it is still just a configurable OpenAI-compatible chat-completions bridge. To point that slot at another compatible service, change the Hermes provider/model, update the Hermes/API bridge base URL, set the API key for the Hermes slot, and clear or change the session header if that service does not use `X-Hermes-Session-Key`.
 
 This means a user can run Council with subscription-based CLI access when their local CLI supports it. For example, if their Claude, Codex, or OpenCode CLI is already logged in and usable from a terminal, Council can call that same CLI without requiring an API key in Council.
 
@@ -106,15 +110,23 @@ OPENROUTER_API_KEY
 DEEPSEEK_API_KEY
 DEEPSEEK_FLASH_API_KEY
 COUNCIL_HERMES_API_KEY
+COUNCIL_PROVIDER_HERMES
+COUNCIL_MODEL_HERMES
+COUNCIL_HERMES_BASE_URL
+COUNCIL_HERMES_SESSION_KEY
+COUNCIL_HERMES_SESSION_HEADER
 ```
 
 For Hermes session isolation, set `API_SERVER_KEY` in the Hermes `.env`, set
 the same value as `COUNCIL_HERMES_API_KEY` in Council's `.env` or as
-`api_keys.hermes` in `config.local.toml`, then restart Hermes with
-`hermes gateway run --replace`. Council also loads gitignored
-`config.local.toml` after `config.toml` for local-only overrides.
+`api_keys.hermes` in `config.local.toml`, and ensure the Hermes `.env` enables
+the API server with `API_SERVER_ENABLED=true`, `API_SERVER_HOST=127.0.0.1`,
+and `API_SERVER_PORT=8642`. Restart Hermes with `hermes gateway run --replace`.
+Council also loads gitignored `config.local.toml` after `config.toml` for
+local-only overrides, such as binding the Hermes slot to an existing Discord DM
+session key.
 
-Council passes saved keys to agent subprocesses as environment variables. The current dispatch path still uses the configured local CLIs (`claude`, `codex exec`, `opencode`) underneath; direct raw HTTP dispatch for arbitrary OpenRouter or Deepseek API models is separate future work.
+Council passes saved keys to agent subprocesses as environment variables. The configured local CLI slots (`claude`, `codex exec`, `opencode`) still run through those CLIs. The Hermes slot uses direct HTTP dispatch to its configured OpenAI-compatible endpoint.
 
 ## Prerequisites
 
@@ -146,4 +158,5 @@ Council uses `dispatch.timeout_seconds` as the default agent subprocess timeout.
 - **Agent dispatch fails before thinking** - check Agent Trace. Council should now write a visible system turn for subprocess errors instead of silently dropping output.
 - **CLI asks for login or auth** - complete that login in the CLI's own terminal workflow. Council launches subprocesses; it is not an interactive login wrapper for Claude, Codex, or OpenCode.
 - **Agent dispatch times out** - check the CLI works manually first (`claude -p "hi"` or `opencode run -m deepseek/deepseek-v4-pro "hi"`), or set `dispatch.timeout_seconds = 0`.
-- **Mention does not dispatch** - check the current mention name in Config. Canonical mentions still work, so `@claude`, `@codex`, and `@deepseek` are useful fallback tests.
+- **Hermes/API dispatch refuses connection** - check the Hermes/API bridge base URL and confirm the service is listening. For Hermes, `Invoke-WebRequest http://127.0.0.1:8642/health -UseBasicParsing` should respond after `hermes gateway run --replace`.
+- **Mention does not dispatch** - check the current mention name in Config. Canonical mentions still work, so `@claude`, `@codex`, `@deepseek`, and `@hermes` are useful fallback tests.

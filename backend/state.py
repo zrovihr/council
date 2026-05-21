@@ -164,7 +164,7 @@ def _key_saved(api_keys: dict, agent: str, provider: str) -> bool:
         return True
     if provider == "openrouter" and api_keys.get("openrouter"):
         return True
-    if agent == "deepseek" and api_keys.get("deepseek"):
+    if (agent == "deepseek" or provider == "deepseek_api") and api_keys.get("deepseek"):
         return True
     return False
 

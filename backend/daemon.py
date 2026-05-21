@@ -50,9 +50,15 @@ def _get_model_deepseek(config: dict) -> str:
 def _get_hermes_config(config: dict) -> dict[str, str]:
     dispatch = config.get("dispatch", {}) or {}
     hermes = dispatch.get("hermes", {}) if isinstance(dispatch.get("hermes"), dict) else {}
+    session_header = (
+        hermes.get("session_header")
+        if "session_header" in hermes
+        else "X-Hermes-Session-Key"
+    )
     return {
         "base_url": str(hermes.get("base_url") or "http://127.0.0.1:8642/v1"),
         "session_key": str(hermes.get("session_key") or ""),
+        "session_header": str(session_header or ""),
     }
 
 
@@ -76,6 +82,17 @@ def _agent_env(config: dict, agent: str) -> dict[str, str]:
     if provider:
         env["COUNCIL_AGENT_PROVIDER"] = provider
     return env
+
+
+def _api_key_for(config: dict, agent: str) -> str:
+    api_keys = config.get("api_keys", {}) or {}
+    providers = config.get("providers", {}) or {}
+    provider = str(providers.get(agent) or "")
+    if provider == "openrouter":
+        return str(api_keys.get("openrouter") or api_keys.get(agent) or "")
+    if provider == "deepseek_api":
+        return str(api_keys.get("deepseek") or api_keys.get(agent) or "")
+    return str(api_keys.get(agent) or "")
 
 
 def _parse_turns(text: str) -> list[dict]:
@@ -514,10 +531,12 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 )
             else:
                 hermes_cfg = _get_hermes_config(config)
-                runtime = f"Hermes API (model={model or 'hermes-agent'})"
+                provider = str((config.get("providers", {}) or {}).get(mention) or "hermes_api")
+                runtime = f"{provider} (model={model or 'hermes-agent'})"
+                header = hermes_cfg["session_header"] or "no session header"
                 command_hint = (
                     f"POST {hermes_cfg['base_url'].rstrip('/')}/chat/completions "
-                    "with X-Hermes-Session-Key"
+                    f"with {header}"
                 )
             await session.add_trace(
                 mention,
@@ -611,8 +630,9 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         _agent_timeout(config, mention),
                         model=model or "hermes-agent",
                         base_url=hermes_cfg["base_url"],
-                        api_key=str(config.get("api_keys", {}).get("hermes") or ""),
+                        api_key=_api_key_for(config, mention),
                         session_key=hermes_cfg["session_key"],
+                        session_header=hermes_cfg["session_header"],
                         on_output=trace_agent_output,
                     )
                 raise ValueError(f"Unknown agent: {mention}")

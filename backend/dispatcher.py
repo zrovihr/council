@@ -574,12 +574,15 @@ def _build_hermes_chat_request(
     base_url: str = "http://127.0.0.1:8642/v1",
     api_key: str = "",
     session_key: str = "",
+    session_header: str = "X-Hermes-Session-Key",
 ) -> tuple[str, dict, dict]:
     url = urljoin(_normalize_hermes_base_url(base_url) + "/", "chat/completions")
     headers = {
         "Content-Type": "application/json",
-        "X-Hermes-Session-Key": _hermes_session_key(session_key, project_root),
     }
+    session_header = (session_header or "").strip()
+    if session_header:
+        headers[session_header] = _hermes_session_key(session_key, project_root)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = {
@@ -653,6 +656,7 @@ async def dispatch_hermes(
     base_url: str = "http://127.0.0.1:8642/v1",
     api_key: str = "",
     session_key: str = "",
+    session_header: str = "X-Hermes-Session-Key",
     on_output: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> DispatchResult:
     url, headers, payload = _build_hermes_chat_request(
@@ -662,6 +666,7 @@ async def dispatch_hermes(
         base_url=base_url,
         api_key=api_key,
         session_key=session_key,
+        session_header=session_header,
     )
     if on_output:
         safe_headers = dict(headers)

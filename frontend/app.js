@@ -1764,6 +1764,12 @@
     return input;
   }
 
+  function apiKeyNameFor(agentId, provider) {
+    if (provider === 'openrouter') return 'openrouter';
+    if (provider === 'deepseek_api') return 'deepseek';
+    return agentId;
+  }
+
   function renderConfig(agents, dispatchCfg) {
     if (configPanel.classList.contains('hidden')) return;
     const order = AGENT_IDS;
@@ -1804,8 +1810,12 @@
 
       const keyWrap = document.createElement('label');
       const cliManaged = ['claude_cli', 'codex_cli', 'opencode'].includes(info.provider || '');
-      keyWrap.textContent = info.provider === 'openrouter' ? 'OpenRouter key' : 'API key';
-      keyWrap.appendChild(makeSecretInput(info.provider === 'openrouter' ? 'openrouter' : id, info.api_key_saved, cliManaged));
+      keyWrap.textContent = info.provider === 'openrouter'
+        ? 'OpenRouter key'
+        : info.provider === 'deepseek_api'
+          ? 'Deepseek key'
+          : 'API key';
+      keyWrap.appendChild(makeSecretInput(apiKeyNameFor(id, info.provider || ''), info.api_key_saved, cliManaged));
 
       const roleWrap = document.createElement('label');
       roleWrap.className = 'role-wrap';
@@ -1879,7 +1889,7 @@
     hermesSection.className = 'config-section';
     const hermesLabel = document.createElement('div');
     hermesLabel.className = 'config-section-label';
-    hermesLabel.textContent = 'Hermes API';
+    hermesLabel.textContent = 'Hermes/API bridge';
     hermesSection.appendChild(hermesLabel);
 
     const hermesUrlWrap = document.createElement('label');
@@ -1904,6 +1914,20 @@
     });
     hermesSessionWrap.appendChild(hermesSessionKey);
     hermesSection.appendChild(hermesSessionWrap);
+
+    const hermesHeaderWrap = document.createElement('label');
+    hermesHeaderWrap.textContent = 'Session header';
+    const hermesSessionHeader = document.createElement('input');
+    hermesSessionHeader.type = 'text';
+    hermesSessionHeader.value = hermesDispatch.session_header !== undefined
+      ? hermesDispatch.session_header
+      : 'X-Hermes-Session-Key';
+    hermesSessionHeader.placeholder = 'blank disables session header';
+    hermesSessionHeader.addEventListener('change', () => {
+      patchConfig({ dispatch: { hermes: { session_header: hermesSessionHeader.value.trim() } } });
+    });
+    hermesHeaderWrap.appendChild(hermesSessionHeader);
+    hermesSection.appendChild(hermesHeaderWrap);
     configGrid.appendChild(hermesSection);
 
     const attachmentSection = document.createElement('div');
