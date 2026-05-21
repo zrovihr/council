@@ -173,6 +173,14 @@ def _turn_mentions(turn: dict, aliases: dict | None = None) -> list[str]:
     return []
 
 
+def _chained_mentions(author: str, body: str, aliases: dict | None = None) -> list[str]:
+    return [
+        mention
+        for mention in _turn_mentions({"author": author, "body": body}, aliases)
+        if mention != author
+    ]
+
+
 def _request_still_valid(
     chat_path: Path,
     request: dict[str, str],
@@ -696,12 +704,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     },
                 )
             if response_header:
-                for chained_mention in _turn_mentions(
-                    {"body": response},
+                for chained_mention in _chained_mentions(
+                    mention,
+                    response,
                     session.effective_config().get("aliases", {}),
                 ):
-                    if chained_mention == mention:
-                        continue
                     await enqueue_mention(
                         chained_mention,
                         "agent",
