@@ -1,6 +1,7 @@
 """Per-agent effort memory for cancelled, failed, and completed runs."""
 
 import json
+import re
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from .state import AGENTS, clean_trace_text
 
 MAX_CURRENT_CHARS = 12000
 MAX_ARTIFACT_CHARS = 60000
+MAX_PRIOR_CURRENT_CHARS = 5000
 
 
 def _stamp() -> str:
@@ -19,6 +21,40 @@ def _tail(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return "(earlier private memory/output omitted due size limit; consult archived artifacts if needed)\n" + text[-max_chars:]
+
+
+def _drop_section(text: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"(?ms)^## {re.escape(heading)}\n.*?(?=^## |\Z)"
+    )
+    return pattern.sub("", text).strip()
+
+
+def _drop_stream_blocks(text: str) -> str:
+    pattern = re.compile(
+        r"(?ms)^\[(?:stdout|stderr|opencode stdout|opencode stderr)\]\n.*?(?=^\[|^## |\Z)"
+    )
+    return pattern.sub("", text).strip()
+
+
+def _prompt_safe_memory(text: str) -> str:
+    """Remove bulky CLI stream echoes before memory is inserted into prompts."""
+    if not text:
+        return ""
+    text = _drop_section(text, "Last Captured Output")
+    text = _drop_stream_blocks(text)
+    return text.strip()
+
+
+def _prior_current_excerpt(current_path: Path) -> str:
+    if not current_path.exists():
+        return ""
+    text = _prompt_safe_memory(
+        current_path.read_text(encoding="utf-8", errors="replace")
+    ).strip()
+    if not text:
+        return ""
+    return _tail(text, MAX_PRIOR_CURRENT_CHARS)
 
 
 def agent_memory_root(session_dir: Path) -> Path:
@@ -46,7 +82,8 @@ def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURREN
     current_path = agent_memory_root(session_dir) / agent / "current.md"
     if not current_path.exists():
         return ""
-    return _tail(current_path.read_text(encoding="utf-8", errors="replace"), max_chars)
+    text = _prompt_safe_memory(current_path.read_text(encoding="utf-8", errors="replace"))
+    return _tail(text, max_chars)
 
 
 def write_agent_memory(
@@ -64,6 +101,8 @@ def write_agent_memory(
 
     ensure_agent_memory_dirs(session_dir)
     root = agent_memory_root(session_dir) / agent
+    current_path = root / "current.md"
+    prior_current = _prior_current_excerpt(current_path)
     artifact_id = f"{_stamp()}-{secrets.token_hex(3)}"
     artifact_path = root / "artifacts" / f"{artifact_id}.md"
 
@@ -102,20 +141,18 @@ def write_agent_memory(
         "",
         "This is private continuity for this same agent. Use it to avoid re-reading or re-deriving prior work, but prefer the shared chat for decisions visible to everyone.",
     ]
+    if prior_current:
+        current_sections.extend([
+            "",
+            "## Prior Continuity",
+            prior_current,
+        ])
+    current_sections.extend(["", "## Latest Run"])
     if error:
         current_sections.extend(["", "## Last Error", "```text", _tail(error, 3000), "```"])
     if final_response:
         current_sections.extend(["", "## Last Final Response", _tail(final_response, 5000)])
-    if captured_output:
-        current_sections.extend([
-            "",
-            "## Last Captured Output",
-            "```text",
-            _tail(captured_output, 5000),
-            "```",
-        ])
-
-    (root / "current.md").write_text(
+    current_path.write_text(
         _tail("\n".join(current_sections).rstrip() + "\n", MAX_CURRENT_CHARS),
         encoding="utf-8",
     )

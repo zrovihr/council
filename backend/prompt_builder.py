@@ -21,7 +21,8 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  session_dir: Path | None = None,
                  aliases: dict | None = None,
                  compactions_path: Path | None = None,
-                 attachment_policy: str | None = None) -> str:
+                 attachment_policy: str | None = None,
+                 min_chat_tail_turns: int = 8) -> str:
     aliases = aliases or {}
     attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
@@ -44,7 +45,11 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "ask a concise question and stop.\n"
     )
 
-    project_rules = read_project_rules(project_root)
+    project_rules = _trim_middle(
+        read_project_rules(project_root),
+        max(1000, min(12000, max_chars // 3)),
+        label="project rules",
+    )
     clauses.append(
         "=== PROJECT RULES (from AGENTS.md or CLAUDE.md) ===\n" + project_rules
     )
@@ -138,7 +143,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
     preamble = "\n".join(clauses)
     chat_budget = max(1500, max_chars - len(preamble) - len(turn_clause) - 300)
     chat_tail = _apply_attachment_policy(
-        _read_chat_tail(chat_md_path, chat_budget),
+        _read_chat_tail(chat_md_path, chat_budget, min_turns=min_chat_tail_turns),
         attachment_policy,
     )
     clauses.append(
@@ -153,13 +158,14 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         chat_tail = _trim_chat_tail_from_start(
             chat_tail,
             max(1000, len(chat_tail) - overflow - 200),
+            min_turns=min_chat_tail_turns,
         )
         clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
         prompt = "\n".join(clauses)
     return prompt
 
 
-def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
+def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000, min_turns: int = 6) -> str:
     if not chat_md_path.exists():
         return "(no chat yet)"
 
@@ -175,6 +181,7 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000) -> str:
             snippet = snippet[headers[0].start():]
         chat_part = snippet
 
+    chat_part = _ensure_recent_turns(full, chat_part, min_turns)
     if len(chat_part) < len(full):
         chat_part = ("(earlier conversation omitted)\n\n" + chat_part.strip())
 
@@ -292,12 +299,26 @@ def _trim_from_start(text: str, max_chars: int) -> str:
     return header + snippet[len(header):]
 
 
-def _trim_chat_tail_from_start(text: str, max_chars: int) -> str:
+def _trim_middle(text: str, max_chars: int, label: str = "content") -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = f"\n\n(... middle of {label} omitted due prompt budget ...)\n\n"
+    keep = max(0, max_chars - len(marker))
+    head = keep // 2
+    tail = keep - head
+    return text[:head].rstrip() + marker + text[-tail:].lstrip()
+
+
+def _trim_chat_tail_from_start(text: str, max_chars: int, min_turns: int = 6) -> str:
     if len(text) <= max_chars:
         return text
 
     omitted_marker = "(earlier conversation omitted)\n\n"
     body = text[len(omitted_marker):] if text.startswith(omitted_marker) else text
+    protected_tail = _last_turns(body, min_turns)
+    if protected_tail and len(protected_tail) >= max_chars:
+        return omitted_marker + protected_tail.strip()
+
     snippet = body[-max_chars:]
     headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", snippet))
     if headers:
@@ -305,7 +326,27 @@ def _trim_chat_tail_from_start(text: str, max_chars: int) -> str:
     else:
         snippet = _trim_from_start(body, max_chars)
 
+    snippet = _ensure_recent_turns(body, snippet, min_turns)
     return omitted_marker + snippet.strip()
+
+
+def _last_turns(text: str, min_turns: int) -> str:
+    if min_turns <= 0:
+        return ""
+    headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", text))
+    if not headers:
+        return ""
+    start_idx = max(0, len(headers) - min_turns)
+    return text[headers[start_idx].start():].strip()
+
+
+def _ensure_recent_turns(full_text: str, candidate: str, min_turns: int) -> str:
+    protected_tail = _last_turns(full_text, min_turns)
+    if not protected_tail:
+        return candidate
+    if protected_tail in candidate:
+        return candidate
+    return protected_tail
 
 
 def _read_latest_compaction_summary(

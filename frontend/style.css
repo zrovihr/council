@@ -814,6 +814,43 @@ body {
 .config-attachment-section select {
   width: 100%;
 }
+.config-agents-md-section {
+  display: grid;
+  grid-template-columns: 180px minmax(120px, 180px) minmax(320px, 1fr);
+  gap: 8px;
+}
+.config-agents-md-section .config-section-label {
+  margin-bottom: 0;
+  padding-top: 8px;
+}
+.config-agents-md-meta {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding-top: 8px;
+}
+.config-agents-md-section textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 150px;
+  outline: none;
+  padding: 7px;
+  resize: vertical;
+  width: 100%;
+}
+.config-agents-md-section textarea:focus {
+  border-color: var(--accent);
+}
+.config-agents-md-section textarea:disabled {
+  color: #71717a;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
 .config-section input:focus,
 .config-section select:focus {
   border-color: var(--accent);
@@ -843,11 +880,13 @@ body {
     padding-top: 0;
   }
   .config-flash-section,
-  .config-attachment-section {
+  .config-attachment-section,
+  .config-agents-md-section {
     grid-template-columns: 1fr;
   }
   .config-flash-section .config-section-label,
-  .config-attachment-section .config-section-label {
+  .config-attachment-section .config-section-label,
+  .config-agents-md-section .config-section-label {
     padding-top: 0;
   }
 }

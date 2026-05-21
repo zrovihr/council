@@ -53,6 +53,7 @@
   let latestDispatch = {};
   let latestGlobalDispatch = {};
   let latestStatus = null;
+  let latestAgentsMd = null;
   let latestTraceEvents = [];
   let latestTurns = [];
   let sessions = [];
@@ -944,10 +945,11 @@
     if (!sessionId || sessionId === activeSessionId) return;
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
     activeSessionId = sessionId;
+    latestAgentsMd = null;
     userScrolledUp = false;
     renderSessions();
     connectWS();
-    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
   }
 
   async function createSession(name, projectRoot) {
@@ -964,9 +966,10 @@
     const data = await res.json();
     await loadSessions();
     activeSessionId = data.active_session_id;
+    latestAgentsMd = null;
     renderSessions();
     connectWS();
-    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
   }
 
   async function deleteSession(sessionId) {
@@ -982,9 +985,10 @@
     const data = await res.json();
     sessions = data.sessions || [];
     activeSessionId = data.active_session_id || (sessions[0] && sessions[0].id) || null;
+    latestAgentsMd = null;
     renderSessions();
     connectWS();
-    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
   }
 
   async function renameSession(sessionId, newName) {
@@ -1310,6 +1314,23 @@
     } catch (_) {}
   }
 
+  async function fetchAgentsMd() {
+    if (!activeSessionId) return;
+    const targetSessionId = activeSessionId;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/agents-md`);
+      const data = await res.json();
+      if (targetSessionId !== activeSessionId) return;
+      latestAgentsMd = data;
+      if (!configPanel.classList.contains('hidden')) {
+        renderConfig(
+          globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents,
+          globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch
+        );
+      }
+    } catch (_) {}
+  }
+
   async function patchConfig(changes) {
     if (!activeSessionId && !globalConfigCheckbox.checked) return;
     configStatus.textContent = 'saving...';
@@ -1332,6 +1353,34 @@
       }, 1200);
     } catch (_) {
       configStatus.textContent = 'save failed';
+    }
+  }
+
+  async function saveAgentsMd(text) {
+    if (!activeSessionId) return;
+    configStatus.textContent = 'saving AGENTS.md...';
+    try {
+      const res = await fetch(sessionApi('/agents-md'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        configStatus.textContent = data.error || 'AGENTS.md save failed';
+        return;
+      }
+      latestAgentsMd = data;
+      renderConfig(
+        globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents,
+        globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch
+      );
+      configStatus.textContent = 'AGENTS.md saved';
+      setTimeout(() => {
+        if (configStatus.textContent === 'AGENTS.md saved') configStatus.textContent = '';
+      }, 1200);
+    } catch (_) {
+      configStatus.textContent = 'AGENTS.md save failed';
     }
   }
 
@@ -1829,6 +1878,40 @@
       attachmentSection.appendChild(wrap);
     }
     configGrid.appendChild(attachmentSection);
+
+    const agentsDocSection = document.createElement('div');
+    agentsDocSection.className = 'config-section config-agents-md-section';
+    const agentsDocLabel = document.createElement('div');
+    agentsDocLabel.className = 'config-section-label';
+    agentsDocLabel.textContent = 'Session AGENTS.md';
+    agentsDocSection.appendChild(agentsDocLabel);
+
+    const agentsDocMeta = document.createElement('div');
+    agentsDocMeta.className = 'config-agents-md-meta';
+    if (globalConfigCheckbox.checked) {
+      agentsDocMeta.textContent = 'session only';
+    } else if (latestAgentsMd && latestAgentsMd.fallback) {
+      agentsDocMeta.textContent = `seeded from ${latestAgentsMd.fallback_filename || 'CLAUDE.md'}`;
+    } else if (latestAgentsMd && latestAgentsMd.exists) {
+      agentsDocMeta.textContent = latestAgentsMd.filename || 'AGENTS.md';
+    } else {
+      agentsDocMeta.textContent = 'new AGENTS.md';
+    }
+    agentsDocSection.appendChild(agentsDocMeta);
+
+    const agentsDoc = document.createElement('textarea');
+    agentsDoc.rows = 9;
+    agentsDoc.spellcheck = false;
+    agentsDoc.disabled = globalConfigCheckbox.checked;
+    agentsDoc.placeholder = globalConfigCheckbox.checked
+      ? 'Switch off global defaults to edit this session project.'
+      : '# Project instructions for all Council agents';
+    agentsDoc.value = globalConfigCheckbox.checked ? '' : ((latestAgentsMd && latestAgentsMd.text) || '');
+    agentsDoc.addEventListener('change', () => {
+      if (!agentsDoc.disabled) saveAgentsMd(agentsDoc.value);
+    });
+    agentsDocSection.appendChild(agentsDoc);
+    configGrid.appendChild(agentsDocSection);
   }
 
   const acBox = document.createElement('div');
@@ -2133,8 +2216,15 @@
       openTurnMenu = null;
     }
   });
-  configToggleBtn.addEventListener('click', () => {
+  configToggleBtn.addEventListener('click', async () => {
     configPanel.classList.toggle('hidden');
+    if (configPanel.classList.contains('hidden')) return;
+    if (!latestAgentsMd) {
+      configStatus.textContent = 'loading AGENTS.md...';
+      await fetchAgentsMd();
+      if (configStatus.textContent === 'loading AGENTS.md...') configStatus.textContent = '';
+      return;
+    }
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
   });
   globalConfigCheckbox.addEventListener('change', () => {
@@ -2172,7 +2262,7 @@
     await loadSessions();
     renderSessions();
     connectWS();
-    await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
     setInterval(() => {
       loadSessions().catch(() => {});
     }, 3000);

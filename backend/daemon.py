@@ -473,6 +473,10 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 aliases=config.get("aliases", {}),
                 compactions_path=session.compactions_path,
                 attachment_policy=_agent_attachment_policy(config, mention),
+                min_chat_tail_turns=max(
+                    8,
+                    int(config.get("compact", {}).get("verbatim_tail_turns", 8)),
+                ),
             )
             binary = _get_binary(config, mention)
             model = _get_model(config, mention)

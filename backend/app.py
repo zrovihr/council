@@ -34,6 +34,45 @@ IMAGE_UPLOAD_TYPES = {
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
+def _session_agents_md_path(session: Session) -> Path:
+    return session.project_root / "AGENTS.md"
+
+
+def _read_session_agents_doc(session: Session) -> dict:
+    agents_path = _session_agents_md_path(session)
+    claude_path = session.project_root / "CLAUDE.md"
+    if agents_path.exists():
+        return {
+            "path": str(agents_path),
+            "filename": "AGENTS.md",
+            "exists": True,
+            "fallback": False,
+            "text": agents_path.read_text(encoding="utf-8", errors="replace"),
+        }
+    if claude_path.exists():
+        return {
+            "path": str(agents_path),
+            "filename": "AGENTS.md",
+            "exists": False,
+            "fallback": True,
+            "fallback_filename": "CLAUDE.md",
+            "fallback_path": str(claude_path),
+            "text": claude_path.read_text(encoding="utf-8", errors="replace"),
+        }
+    return {
+        "path": str(agents_path),
+        "filename": "AGENTS.md",
+        "exists": False,
+        "fallback": False,
+        "text": "",
+    }
+
+
+def _write_session_agents_doc(session: Session, text: str) -> None:
+    path = _session_agents_md_path(session)
+    path.write_text(text.rstrip() + ("\n" if text.strip() else ""), encoding="utf-8")
+
+
 def _get_session(registry: SessionRegistry, session_id: str) -> Session:
     try:
         return registry.get(session_id)
@@ -289,6 +328,21 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if session.chat_path.exists():
             return {"text": session.chat_path.read_text(encoding="utf-8", errors="replace")}
         return {"text": ""}
+
+    @app.get("/api/sessions/{session_id}/agents-md")
+    async def get_agents_md(session_id: str):
+        session = _get_session(registry, session_id)
+        return _read_session_agents_doc(session)
+
+    @app.put("/api/sessions/{session_id}/agents-md")
+    async def put_agents_md(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        text = body.get("text")
+        if not isinstance(text, str):
+            return JSONResponse({"error": "text is required"}, status_code=400)
+        _write_session_agents_doc(session, text)
+        await session.add_trace("system", "AGENTS.md updated", str(_session_agents_md_path(session)))
+        return {"ok": True, **_read_session_agents_doc(session)}
 
     @app.post("/api/sessions/{session_id}/send")
     async def post_send(session_id: str, body: dict):
