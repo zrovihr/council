@@ -20,6 +20,7 @@ PASTED_ATTACHMENT_LINE_RE = re.compile(
 def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
                  session_dir: Path | None = None,
+                 session_name: str = "",
                  aliases: dict | None = None,
                  compactions_path: Path | None = None,
                  attachment_policy: str | None = None,
@@ -30,6 +31,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         agent: str(aliases.get(agent) or agent).strip().lstrip("@")
         for agent in AGENTS
     }
+    user_alias = str(aliases.get("you") or "you").strip().lstrip("@") or "you"
     mention_list = " / ".join(f"@{name}" for name in mention_names.values())
     plain_list = ", ".join(mention_names.values())
     clauses: list[str] = []
@@ -60,6 +62,8 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "You are participating in a shared council chat for the current "
         "Council session. "
         "The user and other agents speak in turns. "
+        f"The user may be displayed as @{user_alias}; this is the human user, "
+        "not an activation command. "
         f"Council itself is the orchestration app at "
         f"{COUNCIL_ROOT}. The current project root is the "
         "target project being discussed, not necessarily Council's own code. "
@@ -83,6 +87,14 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "The orchestrator adds that.\n"
         "7. Keep responses focused. The chat is the medium; "
         "long monologues bloat the log.\n"
+    )
+
+    session_label = session_name.strip() or chat_md_path.parent.name
+    clauses.append(
+        "=== CURRENT SESSION ===\n"
+        f"- Title: {session_label}\n"
+        f"- Project path: {project_root}\n"
+        f"- Council session files: {chat_md_path.parent}\n"
     )
 
     if role.strip():

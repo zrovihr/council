@@ -21,9 +21,15 @@ def normalize_aliases(aliases: dict | None = None) -> dict[str, str]:
     if not isinstance(aliases, dict):
         return normalized
     for agent in AGENTS:
-        alias = str(aliases.get(agent) or "").strip().lstrip("@").lower()
-        if alias and ALIAS_RE.match(alias):
-            normalized[alias] = agent
+        raw_aliases = aliases.get(agent)
+        if isinstance(raw_aliases, (list, tuple, set)):
+            candidates = raw_aliases
+        else:
+            candidates = [raw_aliases]
+        for candidate in candidates:
+            alias = str(candidate or "").strip().lstrip("@").lower()
+            if alias and ALIAS_RE.match(alias):
+                normalized[alias] = agent
     return normalized
 
 

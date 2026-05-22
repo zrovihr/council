@@ -678,6 +678,8 @@ body {
 #config-panel {
   background: #121215;
   border-bottom: 1px solid var(--border);
+  max-height: min(70vh, 720px);
+  overflow: auto;
   padding: 10px 16px;
   flex-shrink: 0;
 }
@@ -691,7 +693,7 @@ body {
 }
 .config-row {
   display: grid;
-  grid-template-columns: 76px minmax(100px, 0.6fr) minmax(130px, 0.8fr) minmax(180px, 1fr) 100px minmax(170px, 0.9fr) minmax(220px, 1.2fr);
+  grid-template-columns: 82px repeat(5, minmax(110px, 1fr));
   gap: 8px;
   align-items: start;
 }
@@ -730,6 +732,9 @@ body {
   font-family: var(--font);
   line-height: 1.35;
   resize: vertical;
+}
+.config-row .role-wrap {
+  grid-column: 2 / -1;
 }
 .config-row select:focus,
 .config-row input:focus,
@@ -781,6 +786,26 @@ body {
   padding: 3px 6px;
   width: 96px;
 }
+.config-user-section {
+  align-items: end;
+  display: grid;
+  grid-template-columns: 180px minmax(180px, 320px);
+  gap: 8px;
+}
+.config-user-section .config-section-label {
+  margin-bottom: 0;
+  padding-bottom: 7px;
+}
+.config-user-section label {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 0;
+  text-transform: uppercase;
+}
+.config-user-section input {
+  width: 100%;
+}
 .config-flash-section {
   display: grid;
   grid-template-columns: 180px minmax(220px, 1fr) minmax(220px, 1fr);
@@ -821,7 +846,7 @@ body {
 }
 .config-agents-md-section {
   display: grid;
-  grid-template-columns: 180px minmax(120px, 180px) minmax(320px, 1fr);
+  grid-template-columns: 180px minmax(120px, 1fr) 130px;
   gap: 8px;
 }
 .config-agents-md-section .config-section-label {
@@ -834,7 +859,33 @@ body {
   font-size: 11px;
   padding-top: 8px;
 }
-.config-agents-md-section textarea {
+.config-panel-btn {
+  align-self: start;
+  background: #18181b;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px 10px;
+}
+.config-panel-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.config-panel-btn:disabled {
+  color: #71717a;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.config-agents-md-panel {
+  background: #0b0b0d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  grid-column: 1 / -1;
+  padding: 8px;
+}
+.config-agents-md-panel textarea {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -848,10 +899,10 @@ body {
   resize: vertical;
   width: 100%;
 }
-.config-agents-md-section textarea:focus {
+.config-agents-md-panel textarea:focus {
   border-color: var(--accent);
 }
-.config-agents-md-section textarea:disabled {
+.config-agents-md-panel textarea:disabled {
   color: #71717a;
   cursor: not-allowed;
   opacity: 0.7;
@@ -885,6 +936,7 @@ body {
     padding-top: 0;
   }
   .config-flash-section,
+  .config-user-section,
   .config-attachment-section,
   .config-agents-md-section {
     grid-template-columns: 1fr;
@@ -1360,6 +1412,7 @@ body {
 .turn-body .mention.codex { color: var(--codex); }
 .turn-body .mention.deepseek { color: var(--deepseek); }
 .turn-body .mention.hermes { color: var(--hermes); }
+.turn-body .mention.you { color: var(--you); }
 
 .turn-body .file-link {
   color: #60a5fa;

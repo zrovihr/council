@@ -97,6 +97,17 @@ def _allowed_config_changes(body: dict) -> dict:
     }
 
 
+def _split_sensitive_config_changes(changes: dict) -> tuple[dict, dict]:
+    sensitive: dict = {}
+    safe: dict = {}
+    for section, value in changes.items():
+        if section == "api_keys":
+            sensitive[section] = value
+        else:
+            safe[section] = value
+    return safe, sensitive
+
+
 def _load_event_lines(session: Session) -> tuple[list[str], list[tuple[int, dict]]]:
     lines = session.events_path.read_text(encoding="utf-8").splitlines()
     turns: list[tuple[int, dict]] = []
@@ -575,7 +586,11 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         changes = _allowed_config_changes(body)
         if not changes:
             return JSONResponse({"error": "no supported config changes"}, status_code=400)
-        await session.update_config(changes)
+        session_changes, global_changes = _split_sensitive_config_changes(changes)
+        if global_changes:
+            await registry.update_global_config(global_changes)
+        if session_changes:
+            await session.update_config(session_changes)
         return {"ok": True, "agents": build_agent_info(registry.config, session.state)}
 
     @app.patch("/api/config")

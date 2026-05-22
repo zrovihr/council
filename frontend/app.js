@@ -54,6 +54,7 @@
   let latestGlobalDispatch = {};
   let latestStatus = null;
   let latestAgentsMd = null;
+  let agentsDocPanelOpen = false;
   let latestTraceEvents = [];
   let latestTurns = [];
   let latestTokenData = null;
@@ -118,7 +119,8 @@
   function parseChatMD(text) {
     const turns = [];
     const TURN_HEADER_RE = /^##\s+\[@(\w+)\]\s+(.+)$/;
-    const lines = text.split('\n');
+    const ESCAPED_TURN_HEADER_RE = /^\\(##\s+\[@\w+\]\s+.+)$/;
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     let current = null;
     let preamble = '';
 
@@ -140,6 +142,18 @@
       current = null;
     }
 
+    function appendBody(line) {
+      const escapedHeader = ESCAPED_TURN_HEADER_RE.exec(line);
+      const bodyLine = escapedHeader ? escapedHeader[1] : line;
+      if (current) {
+        if (current.body) current.body += '\n';
+        current.body += bodyLine;
+      } else {
+        if (preamble) preamble += '\n';
+        preamble += bodyLine;
+      }
+    }
+
     for (const line of lines) {
       const m = TURN_HEADER_RE.exec(line);
       if (m) {
@@ -149,12 +163,8 @@
         }
         finishCurrent();
         current = { author: m[1], time: m[2], body: '' };
-      } else if (current) {
-        if (current.body) current.body += '\n';
-        current.body += line;
       } else {
-        if (preamble) preamble += '\n';
-        preamble += line;
+        appendBody(line);
       }
     }
     finishCurrent();
@@ -181,6 +191,29 @@
 
   function turnEventKey(author, time) {
     return `${author || 'system'}\n${time || ''}`;
+  }
+
+  function isCompactionTurn(turn) {
+    return turn.author === 'system' && /^compacted\b/i.test(String(turn.time || ''));
+  }
+
+  function filterTurnsByEvents(turns, eventTurns) {
+    if (!Array.isArray(eventTurns) || eventTurns.length === 0) return turns;
+    const byKey = {};
+    eventTurns.forEach((evt) => {
+      const key = turnEventKey(evt.author, evt.display_ts);
+      if (!byKey[key]) byKey[key] = 0;
+      byKey[key] += 1;
+    });
+    const used = {};
+    return turns.filter((turn) => {
+      if (isCompactionTurn(turn)) return true;
+      const key = turnEventKey(turn.author, turn.time);
+      const usedCount = used[key] || 0;
+      if (!byKey[key] || usedCount >= byKey[key]) return false;
+      used[key] = usedCount + 1;
+      return true;
+    });
   }
 
   function agentInfoForAuthor(author) {
@@ -223,7 +256,7 @@
         avatar.alt = displayAuthor(turn.author);
       } else {
         const shown = displayAuthor(turn.author);
-        avatar.textContent = turn.author === 'you' ? 'Y' : shown[0].toUpperCase();
+        avatar.textContent = shown[0].toUpperCase();
       }
 
       const authorSpan = document.createElement('span');
@@ -460,7 +493,7 @@
     return aliases;
   }
 
-  function mentionEntries() {
+  function mentionEntries(includeUser) {
     const aliases = currentAgentAliases();
     const entries = [];
     for (const id of AGENT_IDS) {
@@ -468,12 +501,17 @@
       const alias = String(aliases[id] || '').trim().replace(/^@/, '').toLowerCase();
       if (alias && alias !== id) entries.push([alias, id]);
     }
+    if (includeUser) {
+      const userAlias = String((latestAgents.you && latestAgents.you.alias) || 'you').trim().replace(/^@/, '');
+      entries.push(['you', 'you']);
+      if (userAlias && userAlias.toLowerCase() !== 'you') entries.push([userAlias.toLowerCase(), 'you']);
+    }
     entries.sort((a, b) => b[0].length - a[0].length);
     return entries;
   }
 
-  function mentionRegex() {
-    const names = mentionEntries().map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  function mentionRegex(includeUser) {
+    const names = mentionEntries(includeUser).map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
     return new RegExp('@(' + names.join('|') + ')(?!\\w)', 'gi');
   }
 
@@ -482,7 +520,7 @@
     const seen = new Set();
     const withoutCodeBlocks = String(text || '').replace(/```[\s\S]*?```/g, ' ');
     const withoutInlineCode = withoutCodeBlocks.replace(/`[^`\n]*`/g, ' ');
-    const aliasToAgent = Object.fromEntries(mentionEntries());
+    const aliasToAgent = Object.fromEntries(mentionEntries(false));
     for (const match of withoutInlineCode.matchAll(mentionRegex())) {
       const agent = aliasToAgent[String(match[1]).toLowerCase()];
       if (agent && !seen.has(agent)) {
@@ -558,8 +596,8 @@
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
-    const mentionRE = mentionRegex();
-    const aliasToAgent = Object.fromEntries(mentionEntries());
+    const mentionRE = mentionRegex(true);
+    const aliasToAgent = Object.fromEntries(mentionEntries(true));
     for (const node of textNodes) {
       if (node.parentNode && node.parentNode.closest('pre, code, .mention')) continue;
       const text = node.textContent;
@@ -1096,11 +1134,11 @@
       ]);
       if (targetSessionId !== activeSessionId) return;
       const chatData = await chatRes.json();
-      const turns = parseChatMD(chatData.text || '');
-      latestTurns = turns;
+      let turns = parseChatMD(chatData.text || '');
       let tokenData = null;
       if (eventsRes.ok) {
         const eventsData = await eventsRes.json();
+        turns = filterTurnsByEvents(turns, eventsData.turns);
         const td = {};
         const byKey = {};
         eventsData.turns.forEach((evt, i) => {
@@ -1112,6 +1150,7 @@
         if (Object.keys(byKey).length > 0) td.byKey = byKey;
         if (Object.keys(td).length > 0) tokenData = td;
       }
+      latestTurns = turns;
       latestTokenData = tokenData;
       renderTurns(turns, tokenData);
       loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
@@ -1799,6 +1838,26 @@
     if (configPanel.classList.contains('hidden')) return;
     const order = AGENT_IDS;
     configGrid.innerHTML = '';
+
+    const userSection = document.createElement('div');
+    userSection.className = 'config-section config-user-section';
+    const userLabel = document.createElement('div');
+    userLabel.className = 'config-section-label';
+    userLabel.textContent = 'User display';
+    userSection.appendChild(userLabel);
+    const userAliasWrap = document.createElement('label');
+    userAliasWrap.textContent = 'Name';
+    const userAlias = document.createElement('input');
+    userAlias.type = 'text';
+    userAlias.value = (agents.you && agents.you.alias) || 'you';
+    userAlias.placeholder = 'Zan';
+    userAlias.addEventListener('change', () => {
+      patchConfig({ aliases: { you: userAlias.value.trim().replace(/^@/, '') || 'you' } });
+    });
+    userAliasWrap.appendChild(userAlias);
+    userSection.appendChild(userAliasWrap);
+    configGrid.appendChild(userSection);
+
     for (const id of order) {
       const info = agents[id];
       if (!info) continue;
@@ -1993,6 +2052,20 @@
     }
     agentsDocSection.appendChild(agentsDocMeta);
 
+    const agentsDocToggle = document.createElement('button');
+    agentsDocToggle.type = 'button';
+    agentsDocToggle.className = 'config-panel-btn';
+    agentsDocToggle.disabled = globalConfigCheckbox.checked;
+    agentsDocToggle.textContent = agentsDocPanelOpen ? 'Close editor' : 'Open editor';
+    agentsDocToggle.addEventListener('click', () => {
+      agentsDocPanelOpen = !agentsDocPanelOpen;
+      renderConfig(
+        globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents,
+        globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch
+      );
+    });
+    agentsDocSection.appendChild(agentsDocToggle);
+
     const agentsDoc = document.createElement('textarea');
     agentsDoc.rows = 9;
     agentsDoc.spellcheck = false;
@@ -2004,7 +2077,12 @@
     agentsDoc.addEventListener('change', () => {
       if (!agentsDoc.disabled) saveAgentsMd(agentsDoc.value);
     });
-    agentsDocSection.appendChild(agentsDoc);
+    if (agentsDocPanelOpen && !globalConfigCheckbox.checked) {
+      const agentsDocPanel = document.createElement('div');
+      agentsDocPanel.className = 'config-agents-md-panel';
+      agentsDocPanel.appendChild(agentsDoc);
+      agentsDocSection.appendChild(agentsDocPanel);
+    }
     configGrid.appendChild(agentsDocSection);
   }
 
@@ -2067,6 +2145,12 @@
       });
       acBox.appendChild(row);
     });
+  }
+
+  function scrollSelectedACIntoView() {
+    const selected = acBox.querySelector('.ac-row.selected');
+    if (!selected) return;
+    selected.scrollIntoView({ block: 'nearest' });
   }
 
   function positionAC() {
@@ -2133,6 +2217,7 @@
     positionAC();
     renderAC();
     acBox.classList.remove('hidden');
+    scrollSelectedACIntoView();
   }
 
   function applyAC() {
@@ -2226,22 +2311,30 @@
   });
 
   msgInput.addEventListener('keydown', (e) => {
-    if (acState.open && acState.items.length > 0) {
+    if (acState.open) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        acState.selectedIdx = (acState.selectedIdx + 1) % acState.items.length;
-        renderAC();
+        if (acState.items.length > 0) {
+          acState.selectedIdx = (acState.selectedIdx + 1) % acState.items.length;
+          renderAC();
+          scrollSelectedACIntoView();
+        }
         return;
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        acState.selectedIdx = (acState.selectedIdx - 1 + acState.items.length) % acState.items.length;
-        renderAC();
+        if (acState.items.length > 0) {
+          acState.selectedIdx = (acState.selectedIdx - 1 + acState.items.length) % acState.items.length;
+          renderAC();
+          scrollSelectedACIntoView();
+        }
         return;
       }
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault();
-        applyAC();
+        if (acState.items.length > 0) {
+          applyAC();
+        }
         return;
       }
       if (e.key === 'Escape') {

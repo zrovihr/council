@@ -20,6 +20,8 @@ tests/
 sessions/
 chat.md
 chat-archive/
+.council/secrets.json
+**/.council/secrets.json
 *.log
 *.tmp
 council-prompt-*.md

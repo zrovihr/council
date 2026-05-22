@@ -15,10 +15,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek", "hermes")
+ALIAS_KEYS = (*AGENTS, "you")
 STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui")
 SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+TURN_HEADER_LINE_RE = re.compile(r"^##\s+\[@\w+\]\s+.+$")
 
 
 def utc_now() -> str:
@@ -228,6 +230,11 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
         "hermes", _provider_for(providers, "hermes"), models.get("hermes", "")
     )
     return {
+        "you": {
+            "label": "You",
+            "alias": str(aliases.get("you") or "you"),
+            "runtime_family": "you",
+        },
         "claude": {
             "label": "Claude",
             "runtime": "claude CLI",
@@ -299,7 +306,11 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
 
 def render_turn(author: str, text: str, timestamp: str | None = None) -> str:
     stamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"\n## [@{author}] {stamp}\n{text}\n\n"
+    safe_text = "\n".join(
+        f"\\{line}" if TURN_HEADER_LINE_RE.match(line) else line
+        for line in text.split("\n")
+    )
+    return f"\n## [@{author}] {stamp}\n{safe_text}\n\n"
 
 
 def _compaction_prefix_from_chat(chat_path: Path) -> str:
@@ -899,6 +910,8 @@ class Session:
 
     async def update_config(self, changes: dict) -> None:
         for section in STATE_SECTIONS:
+            if section in SENSITIVE_SECTIONS:
+                continue
             section_changes = changes.get(section)
             if not isinstance(section_changes, dict):
                 continue
@@ -922,9 +935,11 @@ class Session:
                     target[key] = str(value)
                     continue
                 if section == "aliases":
-                    if key not in AGENTS:
+                    if key not in ALIAS_KEYS:
                         continue
-                    alias = str(value).strip().lstrip("@").lower()
+                    alias = str(value).strip().lstrip("@")
+                    if key in AGENTS:
+                        alias = alias.lower()
                     target[key] = alias
                     continue
                 if key not in AGENTS:
@@ -1088,6 +1103,7 @@ class SessionRegistry:
         meta_path = session_dir / "meta.json"
         saved_meta = _json_default(meta_path, meta)
         saved_state = _json_default(session_dir / "state.json", default_session_state())
+        self._migrate_session_api_keys(session_dir / "state.json", saved_state)
         return Session(
             id=session_id,
             name=str(saved_meta.get("name") or session_id),
@@ -1105,6 +1121,28 @@ class SessionRegistry:
             state=saved_state,
             created_at=str(saved_meta.get("created_at") or utc_now()),
             last_used_at=str(saved_meta.get("last_used_at") or utc_now()),
+        )
+
+    def _migrate_session_api_keys(self, state_path: Path, saved_state: dict) -> None:
+        api_keys = saved_state.get("api_keys")
+        if not isinstance(api_keys, dict) or not any(api_keys.values()):
+            if isinstance(api_keys, dict) and api_keys:
+                saved_state["api_keys"] = {}
+                state_path.write_text(json.dumps(saved_state, indent=2) + "\n", encoding="utf-8")
+            return
+
+        target = self.config.setdefault("api_keys", {})
+        for key in SECRET_KEYS:
+            value = api_keys.get(key)
+            if value and not target.get(key):
+                target[key] = str(value)
+
+        saved_state["api_keys"] = {}
+        state_path.write_text(json.dumps(saved_state, indent=2) + "\n", encoding="utf-8")
+        self.secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        self.secrets_path.write_text(
+            json.dumps({"api_keys": self.config.get("api_keys", {})}, indent=2) + "\n",
+            encoding="utf-8",
         )
 
     def _new_session_id(self) -> str:
@@ -1216,9 +1254,11 @@ class SessionRegistry:
                     target[key] = str(value)
                     continue
                 if section == "aliases":
-                    if key not in AGENTS:
+                    if key not in ALIAS_KEYS:
                         continue
-                    alias = str(value).strip().lstrip("@").lower()
+                    alias = str(value).strip().lstrip("@")
+                    if key in AGENTS:
+                        alias = alias.lower()
                     target[key] = alias
                     continue
                 if key not in AGENTS:

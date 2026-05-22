@@ -336,6 +336,18 @@ def _agent_attachment_policy(config: dict, agent: str) -> str:
     return str(attachments.get(agent, ""))
 
 
+def _merge_alias_snapshots(*snapshots: dict | None) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        for agent in AGENTS:
+            alias = str(snapshot.get(agent) or "").strip().lstrip("@").lower()
+            if alias and alias not in merged.setdefault(agent, []):
+                merged[agent].append(alias)
+    return merged
+
+
 def _format_timeout(timeout: int) -> str:
     return "none" if timeout <= 0 else f"{timeout}s"
 
@@ -415,6 +427,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             "source": source,
             "header": header,
             "mode": dispatch_mode,
+            "aliases": session.effective_config().get("aliases", {}).copy(),
         }
         await session.add_trace(
             agent,
@@ -502,7 +515,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         nonlocal last_processed_header
         nonlocal consecutive_agent_dispatches
         config = session.effective_config()
-        aliases = config.get("aliases", {})
+        aliases = _merge_alias_snapshots(config.get("aliases", {}), request.get("aliases"))
         if not _request_still_valid(chat_path, request, aliases):
             await session.add_trace(
                 request.get("agent") or "system",
@@ -542,6 +555,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 role=role,
                 session_dir=session.session_dir,
                 aliases=config.get("aliases", {}),
+                session_name=session.name,
                 compactions_path=session.compactions_path,
                 attachment_policy=_agent_attachment_policy(config, mention),
                 min_chat_tail_turns=max(
@@ -739,10 +753,14 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     },
                 )
             if response_header:
+                response_aliases = _merge_alias_snapshots(
+                    session.effective_config().get("aliases", {}),
+                    request.get("aliases"),
+                )
                 for chained_mention in _chained_mentions(
                     mention,
                     response,
-                    session.effective_config().get("aliases", {}),
+                    response_aliases,
                 ):
                     await enqueue_mention(
                         chained_mention,
