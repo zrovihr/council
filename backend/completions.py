@@ -17,6 +17,21 @@ SKIP_EXTS = {
 }
 MAX_FILES = 5000
 CACHE_TTL_SECONDS = 60
+PRIORITY_DIRS = {
+    "docs": 0,
+    "claudedocs": 0,
+    "documentation": 0,
+    "src": 1,
+    "source": 1,
+    "backend": 1,
+    "frontend": 1,
+    "scripts": 1,
+    "tools": 1,
+}
+DEFERRED_DIRS = {
+    "assets": 10,
+    "packages": 11,
+}
 
 _cache: dict[str, tuple[float, list[str]]] = {}
 
@@ -27,6 +42,15 @@ def list_agents(aliases: dict | None = None) -> list[str]:
         alias = str((aliases or {}).get(agent) or agent).strip().lstrip("@")
         result.append(alias or agent)
     return result
+
+
+def _dir_priority(name: str) -> tuple[int, str]:
+    low = name.lower()
+    if low in PRIORITY_DIRS:
+        return (PRIORITY_DIRS[low], low)
+    if low in DEFERRED_DIRS:
+        return (DEFERRED_DIRS[low], low)
+    return (5, low)
 
 
 def list_project_files(project_root: Path) -> list[str]:
@@ -42,6 +66,7 @@ def list_project_files(project_root: Path) -> list[str]:
     root_str = str(project_root)
     for dirpath, dirnames, filenames in os.walk(root_str):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        dirnames.sort(key=_dir_priority)
         for name in filenames:
             ext = os.path.splitext(name)[1].lower()
             if ext in SKIP_EXTS:

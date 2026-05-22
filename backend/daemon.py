@@ -8,7 +8,13 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .state import AGENTS, Session, SessionRegistry
+from .state import (
+    AGENTS,
+    Session,
+    SessionRegistry,
+    infer_provider_for_model,
+    runtime_family_for_provider,
+)
 from .prompt_builder import build_prompt
 from .provenance import build_tool_provenance
 from .agent_memory import write_agent_memory
@@ -23,10 +29,28 @@ logger = logging.getLogger(__name__)
 TURN_HEADER_RE = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$")
 
 
+def _get_provider(config: dict, agent: str) -> str:
+    providers = config.get("providers", {}) or {}
+    defaults = {
+        "claude": "claude_cli",
+        "codex": "codex_cli",
+        "deepseek": "opencode",
+        "hermes": "hermes_api",
+    }
+    configured = str(providers.get(agent) or defaults.get(agent) or "custom")
+    return infer_provider_for_model(agent, configured, _get_runtime_model(config, agent))
+
+
 def _get_binary(config: dict, agent: str) -> str:
-    return (config.get("binaries", {}).get(agent)
-            or config.get("models", {}).get(agent)
-            or agent)
+    provider = _get_provider(config, agent)
+    key = {
+        "claude_cli": "claude",
+        "codex_cli": "codex",
+        "opencode": "opencode",
+    }.get(provider, agent)
+    return (config.get("binaries", {}).get(key)
+            or config.get("models", {}).get(key)
+            or key)
 
 
 def _get_model(config: dict, agent: str) -> str:
@@ -47,6 +71,12 @@ def _get_model_deepseek(config: dict) -> str:
     )
 
 
+def _get_runtime_model(config: dict, agent: str) -> str:
+    if agent == "deepseek":
+        return _get_model_deepseek(config)
+    return _get_model(config, agent)
+
+
 def _get_hermes_config(config: dict) -> dict[str, str]:
     dispatch = config.get("dispatch", {}) or {}
     hermes = dispatch.get("hermes", {}) if isinstance(dispatch.get("hermes"), dict) else {}
@@ -64,8 +94,7 @@ def _get_hermes_config(config: dict) -> dict[str, str]:
 
 def _agent_env(config: dict, agent: str) -> dict[str, str]:
     api_keys = config.get("api_keys", {}) or {}
-    providers = config.get("providers", {}) or {}
-    provider = str(providers.get(agent) or "")
+    provider = _get_provider(config, agent)
     env: dict[str, str] = {}
     if api_keys.get("openrouter"):
         env["OPENROUTER_API_KEY"] = str(api_keys["openrouter"])
@@ -73,12 +102,18 @@ def _agent_env(config: dict, agent: str) -> dict[str, str]:
         env["DEEPSEEK_API_KEY"] = str(api_keys["deepseek"])
     if api_keys.get("deepseek_flash"):
         env["DEEPSEEK_FLASH_API_KEY"] = str(api_keys["deepseek_flash"])
-    if agent == "claude" and api_keys.get("claude"):
-        env["ANTHROPIC_API_KEY"] = str(api_keys["claude"])
-    if agent == "codex" and api_keys.get("codex"):
-        env["OPENAI_API_KEY"] = str(api_keys["codex"])
-    if agent == "deepseek" and api_keys.get("deepseek"):
-        env["OPENCODE_DEEPSEEK_API_KEY"] = str(api_keys["deepseek"])
+    if provider == "claude_cli":
+        key = api_keys.get(agent) or api_keys.get("claude")
+        if key:
+            env["ANTHROPIC_API_KEY"] = str(key)
+    if provider == "codex_cli":
+        key = api_keys.get(agent) or api_keys.get("codex")
+        if key:
+            env["OPENAI_API_KEY"] = str(key)
+    if provider == "opencode":
+        key = api_keys.get(agent) or api_keys.get("deepseek")
+        if key:
+            env["OPENCODE_DEEPSEEK_API_KEY"] = str(key)
     if provider:
         env["COUNCIL_AGENT_PROVIDER"] = provider
     return env
@@ -86,8 +121,7 @@ def _agent_env(config: dict, agent: str) -> dict[str, str]:
 
 def _api_key_for(config: dict, agent: str) -> str:
     api_keys = config.get("api_keys", {}) or {}
-    providers = config.get("providers", {}) or {}
-    provider = str(providers.get(agent) or "")
+    provider = _get_provider(config, agent)
     if provider == "openrouter":
         return str(api_keys.get("openrouter") or api_keys.get(agent) or "")
     if provider == "deepseek_api":
@@ -516,23 +550,25 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 ),
             )
             binary = _get_binary(config, mention)
-            model = _get_model(config, mention)
+            model = _get_runtime_model(config, mention)
             effort = _get_effort(config, mention)
+            provider = _get_provider(config, mention)
+            runtime_family = runtime_family_for_provider(provider, mention)
             agent_env = _agent_env(config, mention)
-            if mention == "deepseek":
-                runtime = _get_model_deepseek(config)
+            if runtime_family == "deepseek":
+                runtime = model
                 command_hint = (
                     f"opencode run -m {runtime} "
                     "--dangerously-skip-permissions <instruction> "
                     "--file=<prompt.md>"
                 )
-            elif mention == "claude":
+            elif runtime_family == "claude":
                 runtime = f"{binary} CLI (model={model or 'CLI default'})"
                 command_hint = (
                     f"{binary} --dangerously-skip-permissions "
                     f"--add-dir {registry.council_root} -p"
                 )
-            elif mention == "codex":
+            elif runtime_family == "codex":
                 runtime = f"{binary} exec (model={model or 'CLI default'})"
                 command_hint = (
                     f"{binary} exec --dangerously-bypass-approvals-and-sandbox "
@@ -540,7 +576,6 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 )
             else:
                 hermes_cfg = _get_hermes_config(config)
-                provider = str((config.get("providers", {}) or {}).get(mention) or "hermes_api")
                 runtime = f"{provider} (model={model or 'hermes-agent'})"
                 header = hermes_cfg["session_header"] or "no session header"
                 command_hint = (
@@ -593,7 +628,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     await session.notify_chat_update()
 
             async def run_dispatch() -> DispatchResult:
-                if mention == "claude":
+                if runtime_family == "claude":
                     return await dispatch_claude(
                         prompt, session.project_root,
                         _agent_timeout(config, mention),
@@ -601,7 +636,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         on_output=trace_agent_output,
                         env=agent_env,
                     )
-                if mention == "codex":
+                if runtime_family == "codex":
                     return await dispatch_codex(
                         prompt, session.project_root,
                         _agent_timeout(config, mention),
@@ -609,7 +644,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         on_output=trace_agent_output,
                         env=agent_env,
                     )
-                if mention == "deepseek":
+                if runtime_family == "deepseek":
                     async def trace_opencode_output(source: str, text: str):
                         captured_output_parts.append(f"[opencode {source}]\n{text}")
                         dispatch_trace_events.append({
@@ -626,12 +661,12 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     return await dispatch_deepseek(
                         prompt, session.project_root,
                         _agent_timeout(config, mention),
-                        model=_get_model_deepseek(config),
+                        model=model,
                         effort=effort,
                         on_output=trace_opencode_output,
                         env=agent_env,
                     )
-                if mention == "hermes":
+                if runtime_family == "hermes":
                     hermes_cfg = _get_hermes_config(config)
                     return await dispatch_hermes(
                         prompt,

@@ -118,9 +118,25 @@ def _load_event_lines(session: Session) -> tuple[list[str], list[tuple[int, dict
 
 
 def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
+    event_line_idx = body.get("event_line_idx")
     author = body.get("author")
     display_ts = body.get("display_ts")
     original_text = body.get("original_text")
+
+    if isinstance(event_line_idx, int):
+        for line_idx, event in turns:
+            if line_idx != event_line_idx:
+                continue
+            if isinstance(author, str) and event.get("author") != author:
+                return None
+            if isinstance(display_ts, str) and event.get("display_ts") != display_ts:
+                return None
+            if (
+                isinstance(original_text, str)
+                and (event.get("text") or "").rstrip() != original_text.rstrip()
+            ):
+                return None
+            return line_idx
 
     if isinstance(author, str) and isinstance(display_ts, str) and isinstance(original_text, str):
         matches: list[int] = []
@@ -618,17 +634,21 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if not events_path.exists():
             return {"turns": []}
         turns: list[dict] = []
-        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line_idx, line in enumerate(events_path.read_text(encoding="utf-8", errors="replace").splitlines()):
             if not line.strip():
                 continue
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if event.get("kind") == "compaction":
+                turns.clear()
+                continue
             if event.get("kind") not in ("user_turn", "agent_turn", "system_turn"):
                 continue
             meta = event.get("metadata") or {}
             turns.append({
+                "event_line_idx": line_idx,
                 "author": event.get("author") or "system",
                 "display_ts": event.get("display_ts") or "",
                 "prompt_tokens_est": event.get("prompt_tokens_est") or meta.get("prompt_tokens_est"),

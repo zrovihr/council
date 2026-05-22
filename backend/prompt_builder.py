@@ -91,9 +91,10 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             f"{role.strip()}\n"
         )
 
+    target_name = mention_names.get(target_agent, target_agent) or target_agent
     turn_clause = (
         f"=== YOUR TURN ===\n"
-        f"You are {target_agent}. Respond to the chat above.\n"
+        f"You are {target_name}. Respond to the chat above.\n"
     )
     pinned_summary = _read_latest_compaction_summary(
         chat_md_path,

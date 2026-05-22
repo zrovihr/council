@@ -56,6 +56,7 @@
   let latestAgentsMd = null;
   let latestTraceEvents = [];
   let latestTurns = [];
+  let latestTokenData = null;
   let sessions = [];
   let activeSessionId = null;
   let editState = null;
@@ -182,6 +183,20 @@
     return `${author || 'system'}\n${time || ''}`;
   }
 
+  function agentInfoForAuthor(author) {
+    return latestAgents[author] || {};
+  }
+
+  function displayAuthor(author) {
+    const info = agentInfoForAuthor(author);
+    return info.alias || author;
+  }
+
+  function avatarClassForAuthor(author) {
+    const info = agentInfoForAuthor(author);
+    return info.runtime_family || author;
+  }
+
   function renderTurns(turns, tokenData) {
     const previousScrollHeight = chatArea.scrollHeight;
     const previousScrollTop = chatArea.scrollTop;
@@ -199,19 +214,24 @@
       const header = document.createElement('div');
       header.className = 'turn-header';
 
-      const hasAgentIcon = ['claude', 'codex', 'deepseek'].includes(turn.author);
+      const avatarClass = avatarClassForAuthor(turn.author);
+      const hasAgentIcon = ['claude', 'codex', 'deepseek'].includes(avatarClass);
       const avatar = document.createElement(hasAgentIcon ? 'img' : 'span');
-      avatar.className = `turn-avatar ${turn.author}`;
+      avatar.className = `turn-avatar ${avatarClass}`;
       if (avatar.tagName === 'IMG') {
-        avatar.src = `/icons/${turn.author}.png`;
-        avatar.alt = turn.author;
+        avatar.src = `/icons/${avatarClass}.png`;
+        avatar.alt = displayAuthor(turn.author);
       } else {
-        avatar.textContent = turn.author === 'you' ? 'Y' : turn.author[0].toUpperCase();
+        const shown = displayAuthor(turn.author);
+        avatar.textContent = turn.author === 'you' ? 'Y' : shown[0].toUpperCase();
       }
 
       const authorSpan = document.createElement('span');
-      authorSpan.className = `turn-author ${turn.author}`;
-      authorSpan.textContent = `@${turn.author}`;
+      authorSpan.className = `turn-author ${avatarClass}`;
+      authorSpan.textContent = `@${displayAuthor(turn.author)}`;
+      if (displayAuthor(turn.author) !== turn.author) {
+        authorSpan.title = turn.author;
+      }
 
       const timeSpan = document.createElement('span');
       timeSpan.className = 'turn-time';
@@ -224,13 +244,16 @@
       header.appendChild(authorSpan);
       header.appendChild(timeSpan);
 
-      let td = tokenData && tokenData[turnIdx];
+      let td = tokenData && !tokenQueues ? tokenData[turnIdx] : null;
       if (tokenQueues) {
         const key = turnEventKey(turn.author, turn.time);
         const queue = tokenQueues[key] || [];
         const offset = tokenQueueOffsets[key] || 0;
-        td = queue[offset] || td;
-        tokenQueueOffsets[key] = offset + 1;
+        td = queue[offset] || null;
+        if (td) tokenQueueOffsets[key] = offset + 1;
+      }
+      if (td && Number.isInteger(td.event_line_idx)) {
+        turn.event_line_idx = td.event_line_idx;
       }
       if (td && td.metadata && td.metadata.dispatch_mode) {
         const modeBadge = document.createElement('span');
@@ -1081,17 +1104,15 @@
         const td = {};
         const byKey = {};
         eventsData.turns.forEach((evt, i) => {
-          const meta = evt.metadata || {};
-          if (evt.prompt_tokens_est || evt.response_tokens_est || meta.dispatch_mode || (evt.tool_calls && evt.tool_calls.length)) {
-            td[i] = evt;
-            const key = turnEventKey(evt.author, evt.display_ts);
-            if (!byKey[key]) byKey[key] = [];
-            byKey[key].push(evt);
-          }
+          td[i] = evt;
+          const key = turnEventKey(evt.author, evt.display_ts);
+          if (!byKey[key]) byKey[key] = [];
+          byKey[key].push(evt);
         });
         if (Object.keys(byKey).length > 0) td.byKey = byKey;
         if (Object.keys(td).length > 0) tokenData = td;
       }
+      latestTokenData = tokenData;
       renderTurns(turns, tokenData);
       loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
       fetchStatus().catch((e) => console.error('Failed to refresh status:', e));
@@ -1186,6 +1207,7 @@
   function turnIdentity(turn, turnIdx) {
     return {
       index: turnIdx,
+      event_line_idx: turn.event_line_idx,
       author: turn.author,
       display_ts: turn.time,
       original_text: turn.body || '',
@@ -1513,6 +1535,9 @@
     latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
     latestDispatch = data.dispatch || {};
     latestGlobalDispatch = data.global_dispatch || latestGlobalDispatch || {};
+    if (latestTurns.length) {
+      renderTurns(latestTurns, latestTokenData);
+    }
     renderAgentModels(latestAgents);
     updateAgentButtons();
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
@@ -1528,7 +1553,7 @@
       } else if (agentName === 'multiple') {
         statusIndicator.innerHTML = '&#9679; agents thinking&hellip;';
       } else {
-        statusIndicator.innerHTML = '&#9679; @' + agentName + ' thinking&hellip;';
+        statusIndicator.innerHTML = '&#9679; @' + displayAuthor(agentName) + ' thinking&hellip;';
       }
       cancelBtn.classList.remove('hidden');
     } else {
@@ -1561,7 +1586,7 @@
   function dispatchLabel(item) {
     if (!item || !item.agent) return '@?';
     const source = item.source === 'user' ? 'from you' : 'from agent';
-    return '@' + item.agent + ' ' + source;
+    return '@' + displayAuthor(item.agent) + ' ' + source;
   }
 
   function renderQueueStatus(data) {

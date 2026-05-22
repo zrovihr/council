@@ -159,6 +159,41 @@ def _provider_for(providers: dict, agent: str) -> str:
     return str(providers.get(agent) or defaults.get(agent) or "custom")
 
 
+def infer_provider_for_model(agent: str, provider: str, model: str) -> str:
+    """Return the effective runtime provider for a slot.
+
+    The UI allows retargeting a slot by model. If a CLI-backed slot is given an
+    obvious model family from another CLI, use that CLI instead of launching the
+    wrong subprocess with an incompatible model ID.
+    """
+    configured = provider or _provider_for({}, agent)
+    if configured in {"openrouter", "deepseek_api", "hermes_api", "custom"}:
+        return configured
+
+    model_low = str(model or "").strip().lower()
+    if model_low.startswith("claude-"):
+        return "claude_cli"
+    if model_low.startswith("deepseek/") or model_low.startswith("deepseek-"):
+        return "opencode"
+    if model_low.startswith("gpt-") or model_low.startswith("o1") or model_low.startswith("o3") or model_low.startswith("o4"):
+        return "codex_cli"
+    return configured
+
+
+def runtime_family_for_provider(provider: str, agent: str = "") -> str:
+    if provider == "claude_cli":
+        return "claude"
+    if provider == "codex_cli":
+        return "codex"
+    if provider == "opencode":
+        return "deepseek"
+    if provider == "hermes_api":
+        return "hermes"
+    if agent in AGENTS:
+        return agent
+    return "system"
+
+
 def _key_saved(api_keys: dict, agent: str, provider: str) -> bool:
     if api_keys.get(agent):
         return True
@@ -180,11 +215,25 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
     aliases = effective.get("aliases", {})
     model_options = effective.get("model_options", {})
     effort_options = effective.get("effort_options", {})
+    claude_provider = infer_provider_for_model(
+        "claude", _provider_for(providers, "claude"), models.get("claude", "")
+    )
+    codex_provider = infer_provider_for_model(
+        "codex", _provider_for(providers, "codex"), models.get("codex", "")
+    )
+    deepseek_provider = infer_provider_for_model(
+        "deepseek", _provider_for(providers, "deepseek"), models.get("deepseek_pro", "")
+    )
+    hermes_provider = infer_provider_for_model(
+        "hermes", _provider_for(providers, "hermes"), models.get("hermes", "")
+    )
     return {
         "claude": {
             "label": "Claude",
             "runtime": "claude CLI",
-            "provider": _provider_for(providers, "claude"),
+            "provider": claude_provider,
+            "configured_provider": _provider_for(providers, "claude"),
+            "runtime_family": runtime_family_for_provider(claude_provider, "claude"),
             "alias": str(aliases.get("claude") or "claude"),
             "binary": binaries.get("claude") or models.get("claude") or "claude",
             "model": models.get("claude", ""),
@@ -192,13 +241,15 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "role": roles.get("claude", ""),
             "model_options": model_options.get("claude", []),
             "effort_options": effort_options.get("claude", []),
-            "api_key_saved": _key_saved(api_keys, "claude", _provider_for(providers, "claude")),
+            "api_key_saved": _key_saved(api_keys, "claude", claude_provider),
             "note": "Uses the Claude CLI default model unless configured there.",
         },
         "codex": {
             "label": "Codex",
             "runtime": "codex exec",
-            "provider": _provider_for(providers, "codex"),
+            "provider": codex_provider,
+            "configured_provider": _provider_for(providers, "codex"),
+            "runtime_family": runtime_family_for_provider(codex_provider, "codex"),
             "alias": str(aliases.get("codex") or "codex"),
             "binary": binaries.get("codex") or models.get("codex") or "codex",
             "model": models.get("codex", ""),
@@ -206,13 +257,15 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "role": roles.get("codex", ""),
             "model_options": model_options.get("codex", []),
             "effort_options": effort_options.get("codex", []),
-            "api_key_saved": _key_saved(api_keys, "codex", _provider_for(providers, "codex")),
+            "api_key_saved": _key_saved(api_keys, "codex", codex_provider),
             "note": "Uses the Codex CLI default model unless configured there.",
         },
         "deepseek": {
             "label": "Deepseek",
             "runtime": "opencode run",
-            "provider": _provider_for(providers, "deepseek"),
+            "provider": deepseek_provider,
+            "configured_provider": _provider_for(providers, "deepseek"),
+            "runtime_family": runtime_family_for_provider(deepseek_provider, "deepseek"),
             "alias": str(aliases.get("deepseek") or "deepseek"),
             "binary": binaries.get("opencode") or models.get("opencode") or "opencode",
             "model": models.get("deepseek_pro", "deepseek/deepseek-v4-pro"),
@@ -220,7 +273,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "role": roles.get("deepseek", ""),
             "model_options": model_options.get("deepseek", []),
             "effort_options": effort_options.get("deepseek", []),
-            "api_key_saved": _key_saved(api_keys, "deepseek", _provider_for(providers, "deepseek")),
+            "api_key_saved": _key_saved(api_keys, "deepseek", deepseek_provider),
             "flash_model": models.get("deepseek_flash", "deepseek/deepseek-v4-flash"),
             "flash_key_saved": bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek")),
             "note": "Configured in Council config.toml or this session.",
@@ -228,7 +281,9 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
         "hermes": {
             "label": "Hermes",
             "runtime": "Hermes API",
-            "provider": _provider_for(providers, "hermes"),
+            "provider": hermes_provider,
+            "configured_provider": _provider_for(providers, "hermes"),
+            "runtime_family": runtime_family_for_provider(hermes_provider, "hermes"),
             "alias": str(aliases.get("hermes") or "hermes"),
             "binary": "",
             "model": models.get("hermes", "hermes-agent"),
@@ -236,7 +291,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "role": roles.get("hermes", ""),
             "model_options": model_options.get("hermes", []),
             "effort_options": effort_options.get("hermes", []),
-            "api_key_saved": _key_saved(api_keys, "hermes", _provider_for(providers, "hermes")),
+            "api_key_saved": _key_saved(api_keys, "hermes", hermes_provider),
             "note": "Routes through Hermes api_server, usually http://localhost:8642/v1.",
         },
     }
