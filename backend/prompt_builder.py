@@ -8,6 +8,7 @@ from .mentions import AGENTS
 from .project import read_project_rules
 
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
+PROMPT_ALIAS_CANONICALS = AGENTS + ("you",)
 PASTED_IMAGE_MARKDOWN_RE = re.compile(
     r"!\[([^\]\n]*)\]\((?:/api/sessions/[^)\s]+/attachments/[^)\s]+|"
     r"[^)\s]*[\\/]attachments[\\/]paste-[^)\s]+)\)"
@@ -114,6 +115,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         max_chars=max(3000, max_chars // 3),
     )
     if pinned_summary:
+        pinned_summary = _rewrite_prompt_aliases(pinned_summary, aliases)
         clauses.append(
             "=== SHARED COMPACTED CONTEXT (authoritative) ===\n"
             "This is shared Council context from the latest compaction. Treat "
@@ -146,6 +148,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
 
     recent_actions = _read_recent_agent_actions(session_dir, max_chars=1800)
     if recent_actions:
+        recent_actions = _rewrite_prompt_aliases(recent_actions, aliases)
         clauses.append(
             "=== RECENT AGENT TOOL ACTIVITY ===\n"
             "Compact provenance from agent turns since the latest user message. "
@@ -160,6 +163,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         _read_chat_tail(chat_md_path, chat_budget, min_turns=min_chat_tail_turns),
         attachment_policy,
     )
+    chat_tail = _rewrite_prompt_aliases(chat_tail, aliases)
     clauses.append(
         "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
     )
@@ -174,9 +178,60 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
             max(1000, len(chat_tail) - overflow - 200),
             min_turns=min_chat_tail_turns,
         )
+        chat_tail = _rewrite_prompt_aliases(chat_tail, aliases)
         clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
         prompt = "\n".join(clauses)
     return prompt
+
+
+def _rewrite_prompt_aliases(text: str, aliases: dict | None = None) -> str:
+    """Present chat history with configured aliases without changing stored IDs."""
+    if not text or not isinstance(aliases, dict):
+        return text
+
+    replacements: dict[str, str] = {}
+    for canonical in PROMPT_ALIAS_CANONICALS:
+        alias = str(aliases.get(canonical) or canonical).strip().lstrip("@")
+        if alias and alias != canonical:
+            replacements[canonical] = alias
+    if not replacements:
+        return text
+
+    names = sorted(replacements, key=len, reverse=True)
+    header_re = re.compile(
+        r"(?m)^(##\s+\[@)(" + "|".join(re.escape(name) for name in names) + r")(\]\s+)",
+        re.IGNORECASE,
+    )
+    mention_re = re.compile(
+        r"@(" + "|".join(re.escape(name) for name in names) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+
+    def rewrite_segment(segment: str) -> str:
+        def header_replace(match: re.Match) -> str:
+            alias = replacements.get(match.group(2).lower())
+            return f"{match.group(1)}{alias}{match.group(3)}" if alias else match.group(0)
+
+        def mention_replace(match: re.Match) -> str:
+            alias = replacements.get(match.group(1).lower())
+            return f"@{alias}" if alias else match.group(0)
+
+        segment = header_re.sub(header_replace, segment)
+        return mention_re.sub(mention_replace, segment)
+
+    return _rewrite_outside_markdown_code(text, rewrite_segment)
+
+
+def _rewrite_outside_markdown_code(text: str, rewrite) -> str:
+    parts: list[str] = []
+    pos = 0
+    code_re = re.compile(r"(```.*?```|~~~.*?~~~|`+[^`\n]*`+)", re.DOTALL)
+    for match in code_re.finditer(text):
+        parts.append(rewrite(text[pos:match.start()]))
+        parts.append(match.group(0))
+        pos = match.end()
+    parts.append(rewrite(text[pos:]))
+    return "".join(parts)
 
 
 def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000, min_turns: int = 6) -> str:
@@ -190,7 +245,7 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000, min_turns: int =
         chat_part = full
     else:
         snippet = full[-tail_limit:]
-        headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", snippet))
+        headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", snippet))
         if headers:
             snippet = snippet[headers[0].start():]
         chat_part = snippet
@@ -334,7 +389,7 @@ def _trim_chat_tail_from_start(text: str, max_chars: int, min_turns: int = 6) ->
         return omitted_marker + protected_tail.strip()
 
     snippet = body[-max_chars:]
-    headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", snippet))
+    headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", snippet))
     if headers:
         snippet = snippet[headers[0].start():]
     else:
@@ -347,7 +402,7 @@ def _trim_chat_tail_from_start(text: str, max_chars: int, min_turns: int = 6) ->
 def _last_turns(text: str, min_turns: int) -> str:
     if min_turns <= 0:
         return ""
-    headers = list(re.finditer(r"(?m)^##\s+\[@\w+\]\s+.+$", text))
+    headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", text))
     if not headers:
         return ""
     start_idx = max(0, len(headers) - min_turns)
