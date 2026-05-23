@@ -76,6 +76,10 @@ def _display_path(path: Path, root: Path) -> str:
         return str(path)
 
 
+def _relative_ui_path(path: Path, root: Path) -> str:
+    return str(path.relative_to(root)).replace("\\", "/")
+
+
 def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS) -> str:
     if agent not in AGENTS:
         return ""
@@ -84,6 +88,31 @@ def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURREN
         return ""
     text = _prompt_safe_memory(current_path.read_text(encoding="utf-8", errors="replace"))
     return _tail(text, max_chars)
+
+
+def read_agent_memory_for_ui(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS) -> dict:
+    """Return the agent's current private memory as local UI data.
+
+    Unlike read_agent_memory(), this keeps the file body as written so the user can
+    inspect what Council actually persisted. It is only exposed through the local
+    session API, not inserted into other agents' prompts.
+    """
+    if agent not in AGENTS:
+        return {"exists": False, "path": "", "text": ""}
+    current_path = agent_memory_root(session_dir) / agent / "current.md"
+    if not current_path.exists():
+        return {
+            "exists": False,
+            "path": _relative_ui_path(current_path, session_dir),
+            "text": "",
+        }
+    text = current_path.read_text(encoding="utf-8", errors="replace")
+    return {
+        "exists": True,
+        "path": _relative_ui_path(current_path, session_dir),
+        "text": _tail(text, max_chars),
+        "truncated": len(text) > max_chars,
+    }
 
 
 def write_agent_memory(

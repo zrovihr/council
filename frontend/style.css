@@ -1299,6 +1299,48 @@ body {
   margin-top: 8px;
 }
 
+.turn-detail-block {
+  margin-top: 8px;
+}
+
+.turn-detail-block > summary {
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  user-select: none;
+}
+
+.turn-detail-block > summary:hover {
+  color: var(--text);
+}
+
+.turn-detail-pre {
+  background: #0f1117;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  color: #d7dce6;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 6px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.turn-memory-path {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.turn-memory-pre {
+  max-height: 420px;
+}
+
 .turn-tool-chip {
   background: rgba(255,255,255,0.035);
   border: 1px solid rgba(255,255,255,0.08);

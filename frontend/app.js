@@ -396,8 +396,8 @@
 
       card.appendChild(header);
       card.appendChild(body);
-      if (td && td.tool_calls && td.tool_calls.length) {
-        card.appendChild(renderToolProvenance(td.tool_calls));
+      if (td && shouldShowRunDetails(turn, td)) {
+        card.appendChild(renderRunDetails(turn, td));
       }
       chatInner.appendChild(card);
     });
@@ -417,19 +417,41 @@
     });
   }
 
-  function renderToolProvenance(toolCalls) {
+  function shouldShowRunDetails(turn, tokenInfo) {
+    if (!tokenInfo || turn.author === 'you') return false;
+    const memory = tokenInfo.agent_memory || {};
+    return Boolean((tokenInfo.tool_calls && tokenInfo.tool_calls.length) || memory.exists || memory.text);
+  }
+
+  function renderRunDetails(turn, tokenInfo) {
     const wrap = document.createElement('details');
     wrap.className = 'turn-tools';
 
     const summary = document.createElement('summary');
     summary.className = 'turn-tools-summary';
+    const toolCalls = Array.isArray(tokenInfo.tool_calls) ? tokenInfo.tool_calls : [];
+    const memory = tokenInfo.agent_memory || {};
     const count = document.createElement('span');
     count.className = 'turn-tools-count';
     count.textContent = String(toolCalls.length);
     summary.appendChild(count);
-    summary.appendChild(document.createTextNode(' tool ' + (toolCalls.length === 1 ? 'action' : 'actions')));
+    const parts = [];
+    parts.push(toolCalls.length + ' tool ' + (toolCalls.length === 1 ? 'action' : 'actions'));
+    if (memory.exists || memory.text) parts.push('private memory');
+    summary.appendChild(document.createTextNode(parts.join(' + ')));
     wrap.appendChild(summary);
 
+    if (toolCalls.length) {
+      wrap.appendChild(renderToolProvenance(toolCalls));
+      wrap.appendChild(renderToolJson(toolCalls));
+    }
+    if (memory.exists || memory.text) {
+      wrap.appendChild(renderAgentMemory(turn.author, memory));
+    }
+    return wrap;
+  }
+
+  function renderToolProvenance(toolCalls) {
     const list = document.createElement('div');
     list.className = 'turn-tools-list';
     for (const item of toolCalls) {
@@ -474,8 +496,42 @@
       }
       list.appendChild(chip);
     }
-    wrap.appendChild(list);
-    return wrap;
+    return list;
+  }
+
+  function renderToolJson(toolCalls) {
+    const details = document.createElement('details');
+    details.className = 'turn-detail-block';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Raw tool calls';
+    details.appendChild(summary);
+    const pre = document.createElement('pre');
+    pre.className = 'turn-detail-pre';
+    pre.textContent = JSON.stringify(toolCalls, null, 2);
+    details.appendChild(pre);
+    return details;
+  }
+
+  function renderAgentMemory(author, memory) {
+    const details = document.createElement('details');
+    details.className = 'turn-detail-block';
+    const summary = document.createElement('summary');
+    summary.textContent = '@' + displayAuthor(author) + ' private memory';
+    if (memory.path) summary.title = memory.path;
+    details.appendChild(summary);
+
+    if (memory.path) {
+      const path = document.createElement('div');
+      path.className = 'turn-memory-path';
+      path.textContent = memory.path + (memory.truncated ? ' (tail shown)' : '');
+      details.appendChild(path);
+    }
+
+    const pre = document.createElement('pre');
+    pre.className = 'turn-detail-pre turn-memory-pre';
+    pre.textContent = memory.text || '(no private memory written yet)';
+    details.appendChild(pre);
+    return details;
   }
 
   function cleanToolKind(kind) {
@@ -1230,8 +1286,8 @@
   async function eraseChat() {
     if (!activeSessionId) return;
     showConfirm(
-      'Clear chat?',
-      'This will permanently delete all chat turns for this session. This cannot be undone.',
+      'Clear session context?',
+      'This archives and clears the visible chat, compacted summaries, queued work, running work, and per-agent prompt memory for this session.',
       async () => {
         try {
           await fetch(sessionApi('/erase'), { method: 'POST' });

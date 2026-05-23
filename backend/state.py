@@ -659,6 +659,49 @@ class Session:
         with open(self.events_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=True) + "\n")
 
+    def hard_clear_context(self) -> dict:
+        """Archive and truncate all prompt context for this session."""
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        clear_archive_dir = self.archive_dir / f"clear-{timestamp}"
+        clear_archive_dir.mkdir(parents=True, exist_ok=True)
+        archived: list[str] = []
+
+        def archive_then_truncate(path: Path, archive_path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+            if text:
+                archive_path.parent.mkdir(parents=True, exist_ok=True)
+                archive_path.write_text(text, encoding="utf-8")
+                try:
+                    archived.append(str(archive_path.relative_to(self.session_dir)).replace("\\", "/"))
+                except ValueError:
+                    archived.append(str(archive_path))
+            path.write_text("", encoding="utf-8")
+
+        archive_then_truncate(self.chat_path, clear_archive_dir / "chat.md")
+        archive_then_truncate(self.events_path, clear_archive_dir / "events.jsonl")
+        archive_then_truncate(self.compactions_path, clear_archive_dir / "compactions.jsonl")
+
+        memory_root = self.session_dir / "agent-memory"
+        for agent in AGENTS:
+            agent_root = memory_root / agent
+            archive_then_truncate(
+                agent_root / "current.md",
+                agent_root / "memory-archive" / f"current-clear-{timestamp}.md",
+            )
+            archive_then_truncate(
+                agent_root / "runs.jsonl",
+                agent_root / "runs-archive" / f"runs-clear-{timestamp}.jsonl",
+            )
+            (agent_root / "artifacts").mkdir(parents=True, exist_ok=True)
+
+        self.trace_events.clear()
+        self.mark_read()
+        return {
+            "archive_dir": str(clear_archive_dir.relative_to(self.session_dir)).replace("\\", "/"),
+            "archived": archived,
+        }
+
     def append_turn(
         self,
         author: str,
@@ -887,6 +930,33 @@ class Session:
         await self.add_trace(agent, "cancel requested", "Stopping active agent subprocess.")
         task.cancel()
         return True
+
+    async def cancel_all_dispatches(self) -> list[asyncio.Task]:
+        tasks: list[asyncio.Task] = []
+        for request in list(self.active_dispatches):
+            request_id = request.get("id")
+            task = self.active_dispatch_tasks.get(request_id)
+            if task is not None and not task.done():
+                agent = request.get("agent") or "system"
+                await self.add_trace(agent, "cancel requested", "Clearing session context.")
+                task.cancel()
+                tasks.append(task)
+        if self.current_dispatch_task and not self.current_dispatch_task.done():
+            if self.current_dispatch_task not in tasks:
+                agent = self.current_agent or "system"
+                await self.add_trace(agent, "cancel requested", "Clearing session context.")
+                self.current_dispatch_task.cancel()
+                tasks.append(self.current_dispatch_task)
+        if self.dispatch_queue:
+            queued = len(self.dispatch_queue)
+            self.dispatch_queue = []
+            await self.add_trace(
+                "system",
+                "queued dispatches cancelled",
+                f"Removed {queued} pending dispatch(es) while clearing session context.",
+            )
+        await self.broadcast_status()
+        return tasks
 
     async def notify_chat_update(self):
         await self.broadcast({"type": "chat_update", "session_id": self.id})

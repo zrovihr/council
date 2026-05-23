@@ -20,6 +20,7 @@ from .state import AGENTS, Session, SessionRegistry, build_agent_info, rebuild_c
 from .daemon import session_daemon_loop
 from .summarizer import compact_chat
 from .completions import list_agents, list_project_files
+from .agent_memory import read_agent_memory_for_ui
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,12 @@ def _get_session(registry: SessionRegistry, session_id: str) -> Session:
         return registry.get(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
+
+
+def _turn_memory_snapshot(session: Session, author: str, max_chars: int = 20000) -> dict | None:
+    if author not in AGENTS:
+        return None
+    return read_agent_memory_for_ui(session.session_dir, author, max_chars=max_chars)
 
 
 def _allowed_config_changes(body: dict) -> dict:
@@ -408,12 +415,18 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/erase")
     async def post_erase(session_id: str):
         session = _get_session(registry, session_id)
-        session.chat_path.write_text("", encoding="utf-8")
-        session.events_path.write_text("", encoding="utf-8")
-        session.trace_events.clear()
-        await session.add_trace("system", "chat erased")
+        cancelled_tasks = await session.cancel_all_dispatches()
+        if cancelled_tasks:
+            await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        archive = session.hard_clear_context()
+        await session.add_trace(
+            "system",
+            "session context cleared",
+            f"Archived prior context under {archive['archive_dir']}.",
+        )
         await session.notify_chat_update()
-        return {"ok": True}
+        await session.broadcast_status()
+        return {"ok": True, **archive}
 
     @app.post("/api/sessions/{session_id}/erase_turn")
     async def post_erase_turn(session_id: str, body: dict):
@@ -649,6 +662,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if not events_path.exists():
             return {"turns": []}
         turns: list[dict] = []
+        memory_cache: dict[str, dict | None] = {}
         for line_idx, line in enumerate(events_path.read_text(encoding="utf-8", errors="replace").splitlines()):
             if not line.strip():
                 continue
@@ -662,15 +676,20 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             if event.get("kind") not in ("user_turn", "agent_turn", "system_turn"):
                 continue
             meta = event.get("metadata") or {}
+            author = event.get("author") or "system"
+            if author not in memory_cache:
+                memory_cache[author] = _turn_memory_snapshot(session, author)
+            memory = memory_cache[author]
             turns.append({
                 "event_line_idx": line_idx,
-                "author": event.get("author") or "system",
+                "author": author,
                 "display_ts": event.get("display_ts") or "",
                 "prompt_tokens_est": event.get("prompt_tokens_est") or meta.get("prompt_tokens_est"),
                 "response_tokens_est": event.get("response_tokens_est") or meta.get("response_tokens_est"),
                 "token_usage": event.get("token_usage"),
                 "metadata": meta,
                 "tool_calls": meta.get("tool_calls") or [],
+                "agent_memory": memory,
             })
         return {"turns": turns}
 
