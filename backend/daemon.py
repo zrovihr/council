@@ -365,9 +365,11 @@ def _format_usage(usage: dict[str, int]) -> str:
     return " ".join(parts) if parts else "tokens=unavailable"
 
 
-def _display_path(path: Path | None, root: Path) -> str:
+def _display_path(path: Path | None, root: Path | None) -> str:
     if path is None:
         return "none"
+    if root is None:
+        return str(path)
     try:
         return str(path.relative_to(root))
     except ValueError:
@@ -545,6 +547,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         dispatch_task: asyncio.Task | None = None
         reserved_turn = False
         response_header = ""
+        working_root = session.working_root
         try:
             role = _get_role(config, mention)
             prompt = build_prompt(
@@ -605,7 +608,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"prompt_chars={len(prompt)} "
                 f"prompt_tokens_est={estimate_tokens(prompt)} "
                 f"role_chars={len(role)} "
-                f"cwd={session.project_root}",
+                f"cwd={working_root}",
             )
             response_header = session.reserve_agent_turn(
                 request["id"],
@@ -644,7 +647,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             async def run_dispatch() -> DispatchResult:
                 if runtime_family == "claude":
                     return await dispatch_claude(
-                        prompt, session.project_root,
+                        prompt, working_root,
                         _agent_timeout(config, mention),
                         binary=binary, model=model, effort=effort,
                         on_output=trace_agent_output,
@@ -652,7 +655,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     )
                 if runtime_family == "codex":
                     return await dispatch_codex(
-                        prompt, session.project_root,
+                        prompt, working_root,
                         _agent_timeout(config, mention),
                         binary=binary, model=model, effort=effort,
                         on_output=trace_agent_output,
@@ -673,7 +676,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         )
 
                     return await dispatch_deepseek(
-                        prompt, session.project_root,
+                        prompt, working_root,
                         _agent_timeout(config, mention),
                         model=model,
                         effort=effort,
@@ -684,7 +687,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     hermes_cfg = _get_hermes_config(config)
                     return await dispatch_hermes(
                         prompt,
-                        session.project_root,
+                        working_root,
                         _agent_timeout(config, mention),
                         model=model or "hermes-agent",
                         base_url=hermes_cfg["base_url"],
@@ -726,7 +729,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 f"response_chars={len(response)} "
                 f"response_tokens_est={estimate_tokens(response)} "
                 f"{_format_usage(result.usage)} "
-                f"memory={_display_path(artifact_path, session.project_root)}",
+                f"memory={_display_path(artifact_path, session.working_root)}",
             )
             if reserved_turn:
                 session.update_reserved_agent_turn(
@@ -817,7 +820,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 )
             safe_body = neutralize_agent_mentions(
                 f"agent {mention} dispatch cancelled by user. Partial effort saved for @{mention}: "
-                f"`{_display_path(artifact_path, session.project_root)}`"
+                f"`{_display_path(artifact_path, session.working_root)}`"
             )
             session.append_turn("system", safe_body, kind="system_turn")
             await session.notify_chat_update()
@@ -847,7 +850,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 "system",
                 f"error: agent {mention} dispatch failed: {safe_reason}\n\n"
                 f"Partial effort saved for @{mention}: "
-                f"`{_display_path(artifact_path, session.project_root)}`",
+                f"`{_display_path(artifact_path, session.working_root)}`",
                 kind="system_turn",
             )
             await session.notify_chat_update()

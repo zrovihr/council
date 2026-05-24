@@ -905,7 +905,7 @@
   }
 
   function projectShortName(projectRoot) {
-    if (!projectRoot) return '';
+    if (!projectRoot) return 'pathless';
     const parts = projectRoot.replaceAll('\\', '/').split('/').filter(Boolean);
     return parts[parts.length - 1] || projectRoot;
   }
@@ -933,7 +933,7 @@
       const project = document.createElement('span');
       project.className = 'session-project';
       project.textContent = projectShortName(session.project_root);
-      project.title = session.project_root || '';
+      project.title = session.project_root || session.working_root || '';
       text.appendChild(name);
       text.appendChild(project);
 
@@ -1139,7 +1139,7 @@
   }
 
   function sessionProjectPath(session) {
-    return session.project_root || '';
+    return session.project_root || session.working_root || '';
   }
 
   function toggleSessionCtx(session, btn) {
@@ -2127,7 +2127,7 @@
     agentsDoc.spellcheck = false;
     agentsDoc.disabled = globalConfigCheckbox.checked;
     agentsDoc.placeholder = globalConfigCheckbox.checked
-      ? 'Switch off global defaults to edit this session project.'
+      ? 'Switch off global defaults to edit this session instructions.'
       : '# Project instructions for all Council agents';
     agentsDoc.value = globalConfigCheckbox.checked ? '' : ((latestAgentsMd && latestAgentsMd.text) || '');
     agentsDoc.addEventListener('change', () => {
@@ -2487,7 +2487,10 @@
 
   newSessionBtn.addEventListener('click', () => {
     const current = activeSession();
-    newSessionProject.value = current ? current.project_root : '';
+    newSessionProject.value = '';
+    newSessionProject.placeholder = current && current.project_root
+      ? `Project root (optional, current: ${projectShortName(current.project_root)})`
+      : 'Project root (optional)';
     newSessionName.value = '';
     newSessionForm.classList.remove('hidden');
     newSessionName.focus();

@@ -36,12 +36,12 @@ MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 def _session_agents_md_path(session: Session) -> Path:
-    return session.project_root / "AGENTS.md"
+    return session.working_root / "AGENTS.md"
 
 
 def _read_session_agents_doc(session: Session) -> dict:
     agents_path = _session_agents_md_path(session)
-    claude_path = session.project_root / "CLAUDE.md"
+    claude_path = session.working_root / "CLAUDE.md"
     if agents_path.exists():
         return {
             "path": str(agents_path),
@@ -71,6 +71,7 @@ def _read_session_agents_doc(session: Session) -> dict:
 
 def _write_session_agents_doc(session: Session, text: str) -> None:
     path = _session_agents_md_path(session)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text.rstrip() + ("\n" if text.strip() else ""), encoding="utf-8")
 
 
@@ -313,9 +314,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     async def post_session(body: dict):
         name = str(body.get("name") or "").strip()
         project_root = str(body.get("project_root") or "").strip()
-        if not project_root:
-            return JSONResponse({"error": "project_root is required"}, status_code=400)
-        session = registry.create_session(name or "untitled", project_root, activate=True)
+        session = registry.create_session(name or "untitled", project_root or None, activate=True)
         _start_session_daemon(app, session)
         return {
             "session": session.metadata(),
@@ -516,11 +515,12 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/open-file")
     async def post_open_file(session_id: str, body: dict):
         session = _get_session(registry, session_id)
+        root = session.working_root
         rel_path = str(body.get("path") or "").strip()
         if not rel_path:
             return JSONResponse({"error": "path is required"}, status_code=400)
-        full_path = (session.project_root / rel_path).resolve()
-        if not str(full_path).startswith(str(session.project_root.resolve())):
+        full_path = (root / rel_path).resolve()
+        if not str(full_path).startswith(str(root.resolve())):
             return JSONResponse({"error": "path traversal denied"}, status_code=403)
         if not full_path.is_file():
             return JSONResponse({"error": "file not found"}, status_code=404)
@@ -536,6 +536,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/open-explorer")
     async def post_open_explorer(session_id: str, body: dict):
         session = _get_session(registry, session_id)
+        root = session.working_root
         rel_path = str(body.get("path") or "").strip()
         if not rel_path:
             return JSONResponse({"error": "path is required"}, status_code=400)
@@ -543,8 +544,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if href_str.rstrip("/") == f".council/sessions/{session_id}":
             full_path = session.session_dir.resolve()
         else:
-            full_path = (session.project_root / rel_path).resolve()
-            if not str(full_path).startswith(str(session.project_root.resolve())):
+            full_path = (root / rel_path).resolve()
+            if not str(full_path).startswith(str(root.resolve())):
                 return JSONResponse({"error": "path traversal denied"}, status_code=403)
         try:
             if sys.platform == "win32":
@@ -568,7 +569,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         path = attachments_dir / name
         path.write_bytes(raw)
         url = f"/api/sessions/{session.id}/attachments/{name}"
-        rel_path = path.relative_to(session.project_root) if session.project_root in path.parents else path
+        root = session.working_root
+        rel_path = path.relative_to(root) if root in path.parents else path
         markdown = f"![pasted image]({url})\n\nAttachment: `{rel_path}`"
         await session.add_trace("system", "image pasted", str(rel_path))
         return {
@@ -624,7 +626,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             aliases = session.effective_config().get("aliases", {})
             agents = [a for a in list_agents(aliases) if a.lower().startswith(q_low)]
         if kind in ("all", "files"):
-            all_files = list_project_files(session.project_root)
+            all_files = list_project_files(session.working_root)
             if q_low:
                 files = [f for f in all_files if q_low in f.lower()][:limit]
             else:

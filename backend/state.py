@@ -55,6 +55,15 @@ def normalize_project_root(project_root: str | Path) -> Path:
     return Path(project_root).expanduser().resolve()
 
 
+def normalize_optional_project_root(project_root: str | Path | None) -> Path | None:
+    if project_root is None:
+        return None
+    text = str(project_root).strip()
+    if not text:
+        return None
+    return normalize_project_root(text)
+
+
 def _toml_quote(value: str) -> str:
     return json.dumps(value)
 
@@ -466,7 +475,7 @@ def load_trace_from_events(events_path: Path, limit: int = 100) -> list[dict]:
 class Session:
     id: str
     name: str
-    project_root: Path
+    project_root: Path | None
     session_dir: Path
     config: dict
     meta_path: Path
@@ -489,14 +498,22 @@ class Session:
     subscribers: list = field(default_factory=list)
 
     @property
+    def working_root(self) -> Path:
+        return self.project_root or self.session_dir
+
+    @property
     def project_name(self) -> str:
+        if self.project_root is None:
+            return "Pathless"
         return self.project_root.name or str(self.project_root)
 
     def metadata(self) -> dict:
         return {
             "id": self.id,
             "name": self.name,
-            "project_root": str(self.project_root),
+            "project_root": str(self.project_root) if self.project_root is not None else "",
+            "pathless": self.project_root is None,
+            "working_root": str(self.working_root),
             "session_dir": str(self.session_dir),
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
@@ -1174,12 +1191,15 @@ class SessionRegistry:
         saved_meta = _json_default(meta_path, meta)
         saved_state = _json_default(session_dir / "state.json", default_session_state())
         self._migrate_session_api_keys(session_dir / "state.json", saved_state)
+        saved_project_root = (
+            saved_meta.get("project_root")
+            if "project_root" in saved_meta
+            else self.default_project_root
+        )
         return Session(
             id=session_id,
             name=str(saved_meta.get("name") or session_id),
-            project_root=normalize_project_root(
-                saved_meta.get("project_root") or self.default_project_root
-            ),
+            project_root=normalize_optional_project_root(saved_project_root),
             session_dir=session_dir,
             config=self.config,
             meta_path=meta_path,
@@ -1224,7 +1244,7 @@ class SessionRegistry:
     def create_session(
         self,
         name: str,
-        project_root: str | Path,
+        project_root: str | Path | None = None,
         activate: bool = True,
     ) -> Session:
         session_id = self._new_session_id()
@@ -1233,7 +1253,7 @@ class SessionRegistry:
         session = Session(
             id=session_id,
             name=name.strip() or "untitled",
-            project_root=normalize_project_root(project_root),
+            project_root=normalize_optional_project_root(project_root),
             session_dir=session_dir,
             config=self.config,
             meta_path=session_dir / "meta.json",

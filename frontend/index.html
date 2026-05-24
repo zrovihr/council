@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Council Chat</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-<link rel="stylesheet" href="/style.css?v=20260522-user-alias-config">
+<link rel="stylesheet" href="/style.css?v=20260524-pathless-sessions">
 </head>
 <body>
 <div id="app">
@@ -16,7 +16,7 @@
     </div>
     <form id="new-session-form" class="hidden">
       <input id="new-session-name" type="text" placeholder="Name">
-      <input id="new-session-project" type="text" placeholder="Project root">
+      <input id="new-session-project" type="text" placeholder="Project root (optional)">
       <div class="session-form-actions">
         <button id="create-session-btn" type="submit">Create</button>
         <button id="cancel-session-btn" type="button">Cancel</button>
@@ -103,13 +103,13 @@
       <p><code>@hermes</code> &mdash; routes the turn through the configured Hermes/API bridge session.</p>
 
       <h4>Memory separation</h4>
-      <p>Each agent has its own <strong>private effort memory</strong> stored under <code>agent-memory/&lt;agent&gt;/</code>. This memory is visible only to that agent across runs &mdash; it contains partial work, prior output, and continuity notes. The shared chat log (<code>chat.md</code>) is the single source of truth for decisions visible to everyone. Agents also receive project context from your <code>AGENTS.md</code> or <code>CLAUDE.md</code>.</p>
+      <p>Each agent has its own <strong>private effort memory</strong> stored under <code>agent-memory/&lt;agent&gt;/</code>. This memory is visible only to that agent across runs &mdash; it contains partial work, prior output, and continuity notes. The shared chat log (<code>chat.md</code>) is the single source of truth for decisions visible to everyone. Agents also receive session instructions from <code>AGENTS.md</code> or <code>CLAUDE.md</code> when present.</p>
 
       <h4>Compaction</h4>
       <p>When the chat grows long, click <code>/compact</code> (or it triggers automatically at a token threshold). A summarizer agent condenses earlier turns into a compact summary, keeping only recent turns in full. This saves tokens and keeps agents focused. The full archive is preserved in <code>chat-archive/</code>.</p>
 
       <h4>Sessions</h4>
-      <p>Each session has its own project root, chat log, agent memories, and config overrides. Switch sessions from the left rail. They run independently &mdash; no data is mixed across sessions.</p>
+      <p>Each session has its own chat log, agent memories, and config overrides. A session can target a project root, or be pathless for scratch work. Switch sessions from the left rail. They run independently &mdash; no data is mixed across sessions.</p>
 
       <h4>Dispatch queue</h4>
       <p><strong>Send</strong> starts mentioned agents immediately, so separate requests can run at the same time. <strong>Queue</strong> sends the message but waits behind current work. Use the <strong>Queue</strong> dropdown in the top bar to see running and queued agents, and cancel individual dispatches.</p>
@@ -132,6 +132,6 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/app.js?v=20260522-user-alias-config"></script>
+<script src="/app.js?v=20260524-pathless-sessions"></script>
 </body>
 </html>

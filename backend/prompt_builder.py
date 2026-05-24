@@ -18,7 +18,7 @@ PASTED_ATTACHMENT_LINE_RE = re.compile(
 )
 
 
-def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
+def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Path,
                  max_chars: int = 25000, role: str = "",
                  session_dir: Path | None = None,
                  session_name: str = "",
@@ -49,8 +49,12 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         "ask a concise question and stop.\n"
     )
 
+    rules_root = project_root if project_root is not None else session_dir
+    raw_project_rules = read_project_rules(rules_root)
+    if project_root is None and raw_project_rules.startswith("No AGENTS.md or CLAUDE.md"):
+        raw_project_rules = read_project_rules(None)
     project_rules = _trim_middle(
-        read_project_rules(project_root),
+        raw_project_rules,
         max(1000, min(12000, max_chars // 3)),
         label="project rules",
     )
@@ -66,7 +70,7 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
         f"The user may be displayed as @{user_alias}; this is the human user, "
         "not an activation command. "
         f"Council itself is the orchestration app at "
-        f"{COUNCIL_ROOT}. The current project root is the "
+        f"{COUNCIL_ROOT}. The current project root, when present, is the "
         "target project being discussed, not necessarily Council's own code. "
         "If the user asks about Council, orchestrator, dispatch, permissions, "
         "or process behavior, discuss that as Council infrastructure. Do not "
@@ -91,10 +95,15 @@ def build_prompt(target_agent: str, project_root: Path, chat_md_path: Path,
     )
 
     session_label = session_name.strip() or chat_md_path.parent.name
+    project_line = (
+        f"- Project path: {project_root}\n"
+        if project_root is not None
+        else "- Project path: none (pathless session)\n"
+    )
     clauses.append(
         "=== CURRENT SESSION ===\n"
         f"- Title: {session_label}\n"
-        f"- Project path: {project_root}\n"
+        f"{project_line}"
         f"- Council session files: {chat_md_path.parent}\n"
     )
 

@@ -30,7 +30,9 @@ DEFAULT_VERBATIM_TAIL_TURNS = 6
 DEFAULT_VERBATIM_TAIL_CHARS = 12000
 
 
-def _display_path(path: Path, root: Path) -> str:
+def _display_path(path: Path, root: Path | None) -> str:
+    if root is None:
+        return str(path)
     try:
         return str(path.relative_to(root))
     except ValueError:
