@@ -1152,6 +1152,15 @@ body {
   color: var(--accent);
 }
 
+.turn-mode-badge.queued[role="button"] {
+  cursor: pointer;
+}
+
+.turn-mode-badge.queued[role="button"]:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
 .turn-status-badge {
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 4px;
@@ -1165,6 +1174,17 @@ body {
 .turn-status-badge.running {
   background: rgba(56,189,248,0.10);
   color: #7dd3fc;
+}
+
+.turn-status-badge.queued {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+}
+
+.turn-status-badge.received,
+.turn-status-badge.completed {
+  background: rgba(74,222,128,0.08);
+  color: #86efac;
 }
 
 .turn-status-badge.cancelled,
@@ -1737,6 +1757,12 @@ body {
 #send-now-btn:hover,
 #send-btn:hover {
   opacity: 0.9;
+}
+
+#send-now-btn:disabled,
+#send-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 /* ---- Autocomplete ---- */

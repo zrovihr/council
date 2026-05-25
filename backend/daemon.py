@@ -336,6 +336,52 @@ def _agent_attachment_policy(config: dict, agent: str) -> str:
     return str(attachments.get(agent, ""))
 
 
+def _config_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _agent_prompt_profile(config: dict, agent: str, runtime_family: str) -> dict:
+    dispatch = config.get("dispatch", {}) or {}
+    profile = {
+        "max_chars": int(dispatch.get("max_prompt_chars", 25000)),
+        "min_chat_tail_turns": max(
+            8,
+            int(config.get("compact", {}).get("verbatim_tail_turns", 8)),
+        ),
+        "include_agent_memory": True,
+        "include_recent_actions": True,
+        "project_rules_max_chars": None,
+        "compaction_summary_max_chars": None,
+    }
+    if runtime_family == "hermes":
+        profile.update({
+            "max_chars": int(
+                dispatch.get(
+                    "council_injection_max_chars",
+                    dispatch.get("hermes_max_prompt_chars", 6000),
+                )
+            ),
+            "min_chat_tail_turns": int(dispatch.get("hermes_min_chat_tail_turns", 2)),
+            "include_agent_memory": _config_bool(
+                dispatch.get("hermes_include_agent_memory"), False
+            ),
+            "include_recent_actions": _config_bool(
+                dispatch.get("hermes_include_recent_actions"), False
+            ),
+            "project_rules_max_chars": int(
+                dispatch.get("hermes_project_rules_max_chars", 1500)
+            ),
+            "compaction_summary_max_chars": int(
+                dispatch.get("hermes_compaction_summary_max_chars", 1500)
+            ),
+        })
+    return profile
+
+
 def _merge_alias_snapshots(*snapshots: dict | None) -> dict[str, list[str]]:
     merged: dict[str, list[str]] = {}
     for snapshot in snapshots:
@@ -454,10 +500,31 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             await session.broadcast_status()
             return request
 
+    async def launch_promoted_mentions() -> None:
+        launched: list[dict[str, str]] = []
+        async with pending_changed:
+            i = 0
+            while i < len(pending_mentions):
+                request = pending_mentions[i]
+                if request.get("mode") == "parallel" and request.get("promoted"):
+                    launched.append(pending_mentions.pop(i))
+                    continue
+                i += 1
+            if launched:
+                await session.broadcast_status()
+        for request in launched:
+            await session.add_trace(
+                request.get("agent") or "system",
+                "dispatch promoted",
+                f"header={request.get('header', '')}",
+            )
+            asyncio.create_task(process_dispatch_request(request))
+
     async def watcher():
         nonlocal last_processed_header
         while True:
             try:
+                await launch_promoted_mentions()
                 if chat_path.exists():
                     text = chat_path.read_text(encoding="utf-8", errors="replace")
                     turns = _parse_turns(text)
@@ -540,7 +607,6 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 session.append_turn("system", safe_body, kind="system_turn")
                 await session.notify_chat_update()
                 return
-        max_chars = int(config["dispatch"]["max_prompt_chars"])
         auto_threshold = config["compact"]["auto_threshold_lines"]
         captured_output_parts: list[str] = []
         dispatch_trace_events: list[dict] = []
@@ -550,6 +616,10 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         working_root = session.working_root
         try:
             role = _get_role(config, mention)
+            provider = _get_provider(config, mention)
+            runtime_family = runtime_family_for_provider(provider, mention)
+            prompt_profile = _agent_prompt_profile(config, mention, runtime_family)
+            max_chars = prompt_profile["max_chars"]
             prompt = build_prompt(
                 mention,
                 session.project_root,
@@ -561,16 +631,16 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 session_name=session.name,
                 compactions_path=session.compactions_path,
                 attachment_policy=_agent_attachment_policy(config, mention),
-                min_chat_tail_turns=max(
-                    8,
-                    int(config.get("compact", {}).get("verbatim_tail_turns", 8)),
-                ),
+                min_chat_tail_turns=prompt_profile["min_chat_tail_turns"],
+                include_agent_memory=prompt_profile["include_agent_memory"],
+                include_recent_actions=prompt_profile["include_recent_actions"],
+                project_rules_max_chars=prompt_profile["project_rules_max_chars"],
+                compaction_summary_max_chars=prompt_profile["compaction_summary_max_chars"],
+                council_context_hint=runtime_family == "hermes",
             )
             binary = _get_binary(config, mention)
             model = _get_runtime_model(config, mention)
             effort = _get_effort(config, mention)
-            provider = _get_provider(config, mention)
-            runtime_family = runtime_family_for_provider(provider, mention)
             agent_env = _agent_env(config, mention)
             if runtime_family == "deepseek":
                 runtime = model
@@ -786,7 +856,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         "auto compact started",
                         f"chat lines={line_count} threshold={auto_threshold}",
                     )
-                    await compact_chat(session, config)
+                    await session.set_compacting()
+                    try:
+                        await compact_chat(session, config)
+                    finally:
+                        await session.set_idle()
                     await session.notify_chat_update()
                     last_processed_header = ""
                 elif line_count > auto_threshold:

@@ -12,7 +12,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.websockets import WebSocketState
 
@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 TURN_KINDS = {"user_turn", "agent_turn", "system_turn"}
+CONTEXT_MAX_CHARS = 16000
+CONTEXT_DEFAULT_CHARS = 8000
 IMAGE_UPLOAD_TYPES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -199,6 +201,166 @@ def _last_agent_speaker(session: Session) -> str | None:
     return None
 
 
+def _clip_context_text(text: str, max_chars: int) -> str:
+    max_chars = max(1000, min(int(max_chars or CONTEXT_DEFAULT_CHARS), CONTEXT_MAX_CHARS))
+    if len(text) <= max_chars:
+        return text
+    marker = "\n\n...[context truncated]...\n\n"
+    keep = max_chars - len(marker)
+    head = max(0, keep // 2)
+    tail = max(0, keep - head)
+    return text[:head].rstrip() + marker + text[-tail:].lstrip()
+
+
+def _latest_context_summary(session: Session) -> str:
+    latest: dict | None = None
+    if session.compactions_path.exists():
+        for line in session.compactions_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                latest = record
+    if latest:
+        archive = latest.get("summary_path") or "chat-archive/unknown.md"
+        created_at = latest.get("created_at") or "unknown time"
+        body = str(latest.get("summary") or "").strip()
+        if body:
+            return f"Compacted at {created_at}. Archive: `{archive}`\n\n{body}"
+    return "(no compacted summary available)"
+
+
+def _context_turns(session: Session) -> list[tuple[int, dict]]:
+    if not session.events_path.exists():
+        return []
+    _, turns = _load_event_lines(session)
+    return turns
+
+
+def _context_agents(turns: list[tuple[int, dict]]) -> list[str]:
+    return sorted({
+        str(event.get("author"))
+        for _, event in turns
+        if event.get("author") in AGENTS
+    })
+
+
+def _format_context_turn(turn_number: int, event: dict) -> str:
+    author = str(event.get("author") or "system")
+    display_ts = str(event.get("display_ts") or "")
+    text = str(event.get("text") or "").rstrip()
+    return f"## turn:{turn_number} [@{author}] {display_ts}\n{text}".rstrip()
+
+
+def _resolve_context_author(raw: str, session: Session) -> str:
+    wanted = raw.strip().lstrip("@").lower()
+    aliases = session.effective_config().get("aliases", {})
+    for canonical in (*AGENTS, "you"):
+        alias = str(aliases.get(canonical) or canonical).strip().lstrip("@").lower()
+        if wanted in {canonical, alias}:
+            return canonical
+    return wanted
+
+
+def _slice_session_context(session: Session, raw_slice: str, max_chars: int) -> dict:
+    slice_spec = (raw_slice or "summary").strip()
+    turns = _context_turns(session)
+
+    if slice_spec == "summary":
+        text = _latest_context_summary(session)
+    elif slice_spec.startswith("tail:"):
+        try:
+            count = max(1, min(int(slice_spec.split(":", 1)[1]), 50))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="tail slice must be tail:N")
+        start = max(0, len(turns) - count)
+        text = "\n\n".join(
+            _format_context_turn(idx + 1, event)
+            for idx, (_, event) in enumerate(turns[start:], start=start)
+        ) or "(no turns available)"
+    elif slice_spec.startswith("search:"):
+        query = slice_spec.split(":", 1)[1].strip().lower()
+        if not query:
+            raise HTTPException(status_code=400, detail="search slice requires a query")
+        matches = [
+            (idx, event)
+            for idx, (_, event) in enumerate(turns, start=1)
+            if query in str(event.get("text") or "").lower()
+            or query in str(event.get("author") or "").lower()
+            or query in str(event.get("display_ts") or "").lower()
+        ]
+        text = "\n\n".join(_format_context_turn(idx, event) for idx, event in matches[-20:])
+        if not text:
+            text = f"(no matches for {query!r})"
+    elif slice_spec.startswith("turn:"):
+        _, rest = slice_spec.split(":", 1)
+        author_raw, sep, selector = rest.rpartition(":")
+        if not sep or not author_raw:
+            raise HTTPException(status_code=400, detail="turn slice must be turn:@agent:last or turn:@agent:N")
+        author = _resolve_context_author(author_raw, session)
+        author_turns = [
+            (idx, event)
+            for idx, (_, event) in enumerate(turns, start=1)
+            if event.get("author") == author
+        ]
+        if selector == "last":
+            offset = 1
+        else:
+            try:
+                offset = max(1, int(selector))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="turn selector must be last or a positive integer")
+        if offset > len(author_turns):
+            text = f"(no turn {selector!r} for @{author})"
+        else:
+            idx, event = author_turns[-offset]
+            text = _format_context_turn(idx, event)
+    elif slice_spec.startswith("range:"):
+        body = slice_spec.split(":", 1)[1].strip()
+        if ".." not in body:
+            raise HTTPException(status_code=400, detail="range slice must be range:A..B")
+        start_raw, end_raw = body.split("..", 1)
+        try:
+            start = max(1, int(start_raw))
+            end = max(start, int(end_raw))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="range bounds must be turn numbers")
+        selected = [
+            (idx, event)
+            for idx, (_, event) in enumerate(turns, start=1)
+            if start <= idx <= end
+        ]
+        text = "\n\n".join(_format_context_turn(idx, event) for idx, event in selected)
+        if not text:
+            text = f"(no turns in range {start}..{end})"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="unsupported slice; use summary, tail:N, search:QUERY, turn:@agent:last, turn:@agent:N, or range:A..B",
+        )
+
+    clipped = _clip_context_text(text, max_chars)
+    return {
+        "session_id": session.id,
+        "slice": slice_spec,
+        "max_chars": max(1000, min(int(max_chars or CONTEXT_DEFAULT_CHARS), CONTEXT_MAX_CHARS)),
+        "truncated": len(text) > len(clipped),
+        "turn_count": len(turns),
+        "agents": _context_agents(turns),
+        "text": clipped,
+    }
+
+
+def _require_local_context_request(request: Request) -> None:
+    host = request.client.host if request.client else ""
+    if host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return
+    raise HTTPException(status_code=403, detail="context fetch is only available from localhost")
+
+
 def _resolve_quick_reply(text: str, session: Session) -> str:
     stripped = text.strip()
     if stripped != "@@" and not stripped.startswith("@@ "):
@@ -363,6 +525,17 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             return {"text": session.chat_path.read_text(encoding="utf-8", errors="replace")}
         return {"text": ""}
 
+    @app.get("/api/sessions/{session_id}/context")
+    async def get_session_context(
+        session_id: str,
+        request: Request,
+        slice: str = "summary",
+        max_chars: int = CONTEXT_DEFAULT_CHARS,
+    ):
+        _require_local_context_request(request)
+        session = _get_session(registry, session_id)
+        return _slice_session_context(session, slice, max_chars)
+
     @app.get("/api/sessions/{session_id}/agents-md")
     async def get_agents_md(session_id: str):
         session = _get_session(registry, session_id)
@@ -381,6 +554,11 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     @app.post("/api/sessions/{session_id}/send")
     async def post_send(session_id: str, body: dict):
         session = _get_session(registry, session_id)
+        if session.compacting:
+            return JSONResponse(
+                {"error": "cannot send messages while Council is compacting"},
+                status_code=409,
+            )
         text = str(body.get("text", ""))
         if not text.strip():
             return JSONResponse({"error": "empty message"}, status_code=400)
@@ -391,6 +569,30 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         session.append_turn("you", text, metadata={"dispatch_mode": dispatch_mode})
         await session.notify_chat_update()
         return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/promote_turn")
+    async def post_promote_turn(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        lines, turns = _load_event_lines(session)
+        target_idx = _find_turn_line(body, turns)
+        if target_idx is None:
+            return JSONResponse({"error": "turn not found"}, status_code=404)
+        event = json.loads(lines[target_idx])
+        if event.get("author") != "you":
+            return JSONResponse({"error": "only your own queued turns can be promoted"}, status_code=403)
+        meta = event.setdefault("metadata", {})
+        if meta.get("dispatch_mode") != "queued":
+            return JSONResponse({"error": "turn is not queued"}, status_code=409)
+        header = f"## [@you] {event.get('display_ts') or ''}"
+        promoted = await session.promote_queued_dispatches_for_header(header)
+        if not promoted:
+            return JSONResponse({"error": "no queued dispatches for this turn"}, status_code=409)
+        meta["dispatch_mode"] = "parallel"
+        lines[target_idx] = json.dumps(event, ensure_ascii=True)
+        session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        await session.add_trace("system", "queued turn promoted", header)
+        await session.notify_chat_update()
+        return {"ok": True, "promoted": promoted}
 
     @app.post("/api/sessions/{session_id}/compact")
     async def post_compact(session_id: str):
@@ -404,7 +606,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
                 },
                 status_code=409,
             )
-        await session.set_busy("summarizer")
+        await session.set_compacting()
         try:
             await compact_chat(session, session.effective_config())
         finally:
@@ -639,6 +841,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         session = _get_session(registry, session_id)
         return {
             "busy": session.busy,
+            "compacting": session.compacting,
             "current_agent": session.current_agent,
             "agent": session.current_agent,
             "current_dispatch": session.current_dispatch,

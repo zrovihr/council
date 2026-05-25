@@ -25,7 +25,12 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
                  aliases: dict | None = None,
                  compactions_path: Path | None = None,
                  attachment_policy: str | None = None,
-                 min_chat_tail_turns: int = 8) -> str:
+                 min_chat_tail_turns: int = 8,
+                 include_agent_memory: bool = True,
+                 include_recent_actions: bool = True,
+                 project_rules_max_chars: int | None = None,
+                 compaction_summary_max_chars: int | None = None,
+                 council_context_hint: bool = False) -> str:
     aliases = aliases or {}
     attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
@@ -53,9 +58,14 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
     raw_project_rules = read_project_rules(rules_root)
     if project_root is None and raw_project_rules.startswith("No AGENTS.md or CLAUDE.md"):
         raw_project_rules = read_project_rules(None)
+    project_rules_budget = (
+        project_rules_max_chars
+        if project_rules_max_chars is not None
+        else max(1000, min(12000, max_chars // 3))
+    )
     project_rules = _trim_middle(
         raw_project_rules,
-        max(1000, min(12000, max_chars // 3)),
+        project_rules_budget,
         label="project rules",
     )
     clauses.append(
@@ -95,17 +105,29 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
     )
 
     session_label = session_name.strip() or chat_md_path.parent.name
+    session_id = chat_md_path.parent.name
+    context_turn_count, context_agents = _prompt_context_metadata(session_dir or chat_md_path.parent)
     project_line = (
         f"- Project path: {project_root}\n"
         if project_root is not None
         else "- Project path: none (pathless session)\n"
     )
-    clauses.append(
+    session_lines = (
         "=== CURRENT SESSION ===\n"
         f"- Title: {session_label}\n"
         f"{project_line}"
+        f"- Session id: {session_id}\n"
+        f"- Turn count: {context_turn_count}\n"
+        f"- Agents who have spoken: {context_agents or 'none'}\n"
         f"- Council session files: {chat_md_path.parent}\n"
     )
+    if council_context_hint:
+        session_lines += (
+            "- Exact context fetch: use the `council_fetch` tool when you need "
+            "more Council chat context. Available slices: `summary`, `tail:N`, "
+            "`search:QUERY`, `turn:@agent:last`, `turn:@agent:N`, `range:A..B`.\n"
+        )
+    clauses.append(session_lines)
 
     if role.strip():
         clauses.append(
@@ -121,7 +143,11 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
     pinned_summary = _read_latest_compaction_summary(
         chat_md_path,
         compactions_path,
-        max_chars=max(3000, max_chars // 3),
+        max_chars=(
+            compaction_summary_max_chars
+            if compaction_summary_max_chars is not None
+            else max(3000, max_chars // 3)
+        ),
     )
     if pinned_summary:
         pinned_summary = _rewrite_prompt_aliases(pinned_summary, aliases)
@@ -134,7 +160,7 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         )
 
     agent_memory = ""
-    if session_dir is not None:
+    if include_agent_memory and session_dir is not None:
         agent_memory = read_agent_memory(
             session_dir,
             target_agent,
@@ -155,7 +181,11 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
             + _trim_from_start(agent_memory, memory_budget)
         )
 
-    recent_actions = _read_recent_agent_actions(session_dir, max_chars=1800)
+    recent_actions = (
+        _read_recent_agent_actions(session_dir, max_chars=1800)
+        if include_recent_actions
+        else ""
+    )
     if recent_actions:
         recent_actions = _rewrite_prompt_aliases(recent_actions, aliases)
         clauses.append(
@@ -241,6 +271,33 @@ def _rewrite_outside_markdown_code(text: str, rewrite) -> str:
         pos = match.end()
     parts.append(rewrite(text[pos:]))
     return "".join(parts)
+
+
+def _prompt_context_metadata(session_dir: Path | None) -> tuple[int, str]:
+    if session_dir is None:
+        return 0, ""
+    events_path = session_dir / "events.jsonl"
+    if not events_path.exists():
+        return 0, ""
+    turn_count = 0
+    speakers: set[str] = set()
+    for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") == "compaction":
+            turn_count = 0
+            speakers.clear()
+            continue
+        if event.get("kind") in ("user_turn", "agent_turn", "system_turn"):
+            turn_count += 1
+            author = event.get("author")
+            if author in AGENTS:
+                speakers.add(str(author))
+    return turn_count, ", ".join(sorted(speakers))
 
 
 def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000, min_turns: int = 6) -> str:

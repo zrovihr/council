@@ -36,7 +36,11 @@ def normalize_aliases(aliases: dict | None = None) -> dict[str, str]:
 def _mention_re(aliases: dict | None = None, tail: bool = False) -> re.Pattern:
     alias_map = normalize_aliases(aliases)
     names = sorted(alias_map, key=len, reverse=True)
-    pattern = r"@(" + "|".join(re.escape(name) for name in names) + r")(?!\w)"
+    pattern = (
+        r"(?<![\\'\"\u2018\u2019\u201c\u201d])@("
+        + "|".join(re.escape(name) for name in names)
+        + r")(?!\w)"
+    )
     if tail:
         pattern += r"\s*$"
     return re.compile(pattern, re.IGNORECASE)

@@ -55,6 +55,14 @@ hermes = ["low", "medium", "high"]
 timeout_seconds = 0
 max_prompt_chars = 25000
 chain_depth_limit = 3
+# Hard cap for Council context injected into Hermes prompts.
+# Hermes can fetch more via the read-only council_fetch tool when needed.
+council_injection_max_chars = 6000
+hermes_min_chat_tail_turns = 2
+hermes_include_agent_memory = false
+hermes_include_recent_actions = false
+hermes_project_rules_max_chars = 1500
+hermes_compaction_summary_max_chars = 1500
 
 [dispatch.attachments]
 claude = "path-visible"
@@ -64,7 +72,8 @@ hermes = "path-visible"
 
 [dispatch.hermes]
 base_url = "http://127.0.0.1:8642/v1"
-session_key = "agent:main:discord:dm:1467704410766311599"
+# Set in config.local.toml or COUNCIL_HERMES_SESSION_KEY for your local bridge.
+session_key = ""
 session_header = "X-Hermes-Session-Key"
 
 [ui]

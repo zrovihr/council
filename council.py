@@ -67,6 +67,7 @@ def _apply_env_overrides(config: dict, env: dict[str, str]) -> None:
         "COUNCIL_HERMES_BASE_URL": ("dispatch", "hermes.base_url", str),
         "COUNCIL_HERMES_SESSION_KEY": ("dispatch", "hermes.session_key", str),
         "COUNCIL_HERMES_SESSION_HEADER": ("dispatch", "hermes.session_header", str),
+        "COUNCIL_INJECTION_MAX_CHARS": ("dispatch", "council_injection_max_chars", int),
         "COUNCIL_PORT": ("server", "port", int),
         "COUNCIL_HOST": ("server", "host", str),
     }

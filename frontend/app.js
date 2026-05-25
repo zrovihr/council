@@ -64,6 +64,7 @@
   let chatFetchQueued = false;
   let sessions = [];
   let activeSessionId = null;
+  const sessionScrollStates = new Map();
   let editState = null;
   let openTurnMenu = null;
   let renamingSessionId = null;
@@ -81,6 +82,12 @@
     ['path-visible', 'Path visible'],
     ['placeholder', 'Placeholder only'],
   ];
+
+  function isCompactingStatus(status = latestStatus) {
+    return Boolean(status && (
+      status.compacting || (status.busy && (status.current_agent || status.agent) === 'summarizer')
+    ));
+  }
 
   marked.setOptions({
     highlight: function (code, lang) {
@@ -111,6 +118,7 @@
     if (isRenderingChat) return;
     const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 60;
     userScrolledUp = !atBottom;
+    saveActiveScrollState();
     if (atBottom) {
       newMsgsBtn.classList.add('hidden');
     }
@@ -128,6 +136,69 @@
     } else {
       newMsgsBtn.classList.remove('hidden');
     }
+  }
+
+  function turnScrollKey(turn, turnIdx) {
+    if (Number.isInteger(turn.event_line_idx)) return `event:${turn.event_line_idx}`;
+    return `turn:${turnIdx}:${turn.author || ''}:${turn.time || ''}`;
+  }
+
+  function readChatScrollState() {
+    const distanceFromBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight;
+    const state = {
+      scrollTop: chatArea.scrollTop,
+      scrollHeight: chatArea.scrollHeight,
+      distanceFromBottom,
+      atBottom: distanceFromBottom < 60,
+      anchorKey: null,
+      anchorOffset: 0,
+    };
+
+    const cards = chatInner.querySelectorAll('.turn-card[data-scroll-key]');
+    for (const card of cards) {
+      if (card.offsetTop + card.offsetHeight >= chatArea.scrollTop) {
+        state.anchorKey = card.dataset.scrollKey;
+        state.anchorOffset = card.offsetTop - chatArea.scrollTop;
+        break;
+      }
+    }
+    return state;
+  }
+
+  function saveActiveScrollState(force = false) {
+    if (!activeSessionId || (isRenderingChat && !force)) return;
+    sessionScrollStates.set(activeSessionId, readChatScrollState());
+  }
+
+  function escapeCssValue(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+      return window.CSS.escape(value);
+    }
+    return String(value).replace(/["\\]/g, '\\$&');
+  }
+
+  function restoreChatScrollState(state) {
+    if (!state || state.atBottom) {
+      userScrolledUp = false;
+      chatArea.scrollTop = chatArea.scrollHeight;
+      newMsgsBtn.classList.add('hidden');
+      return;
+    }
+
+    userScrolledUp = true;
+    let restored = false;
+    if (state.anchorKey) {
+      const selector = `.turn-card[data-scroll-key="${escapeCssValue(state.anchorKey)}"]`;
+      const anchor = chatInner.querySelector(selector);
+      if (anchor) {
+        chatArea.scrollTop = Math.max(0, anchor.offsetTop - state.anchorOffset);
+        restored = true;
+      }
+    }
+    if (!restored) {
+      chatArea.scrollTop = Math.max(0, chatArea.scrollHeight - state.distanceFromBottom - chatArea.clientHeight);
+    }
+    newMsgsBtn.classList.remove('hidden');
   }
 
   function parseChatMD(text) {
@@ -207,6 +278,22 @@
     return `${author || 'system'}\n${time || ''}`;
   }
 
+  function turnHeader(turn) {
+    return `## [@${turn.author || 'system'}] ${turn.time || ''}`;
+  }
+
+  function matchingDispatchesForTurn(turn) {
+    const status = latestStatus || {};
+    const header = turnHeader(turn);
+    const active = status.active_dispatches || [];
+    const current = status.current_dispatch ? [status.current_dispatch] : [];
+    const queued = status.dispatch_queue || [];
+    return {
+      active: active.concat(current).filter((item) => item && item.header === header),
+      queued: queued.filter((item) => item && item.header === header),
+    };
+  }
+
   function isCompactionTurn(turn) {
     return turn.author === 'system' && /^compacted\b/i.test(String(turn.time || ''));
   }
@@ -244,11 +331,7 @@
     return info.runtime_family || author;
   }
 
-  function renderTurns(turns, tokenData) {
-    const previousScrollHeight = chatArea.scrollHeight;
-    const previousScrollTop = chatArea.scrollTop;
-    const previousDistanceFromBottom = previousScrollHeight - previousScrollTop - chatArea.clientHeight;
-    const wasAtBottom = previousDistanceFromBottom < 60;
+  function renderTurns(turns, tokenData, scrollState = readChatScrollState()) {
     isRenderingChat = true;
 
     chatInner.innerHTML = '';
@@ -302,24 +385,62 @@
       if (td && Number.isInteger(td.event_line_idx)) {
         turn.event_line_idx = td.event_line_idx;
       }
+      card.dataset.scrollKey = turnScrollKey(turn, turnIdx);
       if (td && td.metadata && td.metadata.dispatch_mode) {
         const modeBadge = document.createElement('span');
         modeBadge.className = `turn-mode-badge ${td.metadata.dispatch_mode}`;
         modeBadge.textContent = td.metadata.dispatch_mode === 'queued' ? 'Queued' : 'Live';
         modeBadge.title = td.metadata.dispatch_mode === 'queued'
-          ? 'Mentioned agents were queued behind earlier work.'
+          ? 'Click to start this queued turn immediately.'
           : 'Mentioned agents were started immediately when possible.';
+        if (
+          turn.author === 'you'
+          && td.metadata.dispatch_mode === 'queued'
+          && matchingDispatchesForTurn(turn).queued.length
+        ) {
+          modeBadge.type = 'button';
+          modeBadge.tabIndex = 0;
+          modeBadge.setAttribute('role', 'button');
+          modeBadge.addEventListener('click', () => promoteTurnDispatch(turn, turnIdx));
+          modeBadge.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              promoteTurnDispatch(turn, turnIdx);
+            }
+          });
+        }
         header.appendChild(modeBadge);
       }
-      if (td && td.metadata && td.metadata.dispatch_status && td.metadata.dispatch_status !== 'completed') {
+      const dispatchMatches = turn.author === 'you' ? matchingDispatchesForTurn(turn) : null;
+      let inferredStatus = null;
+      if (dispatchMatches && dispatchMatches.active.length) {
+        inferredStatus = 'running';
+      } else if (dispatchMatches && dispatchMatches.queued.length) {
+        inferredStatus = 'queued';
+      } else if (td && td.metadata && td.metadata.dispatch_mode) {
+        inferredStatus = agentMentions(turn.body).length ? 'completed' : 'received';
+      }
+      const explicitStatus = td && td.metadata && td.metadata.dispatch_status;
+      const shownStatus = explicitStatus && explicitStatus !== 'completed' ? explicitStatus : inferredStatus;
+      if (shownStatus) {
         const statusBadge = document.createElement('span');
-        statusBadge.className = `turn-status-badge ${td.metadata.dispatch_status}`;
-        statusBadge.textContent = td.metadata.dispatch_status === 'running'
+        statusBadge.className = `turn-status-badge ${shownStatus}`;
+        statusBadge.textContent = shownStatus === 'running'
           ? 'Running'
-          : td.metadata.dispatch_status === 'cancelled'
+          : shownStatus === 'queued'
+            ? 'Waiting'
+          : shownStatus === 'cancelled'
             ? 'Cancelled'
-            : 'Failed';
-        statusBadge.title = 'Reserved agent chat slot status.';
+          : shownStatus === 'failed'
+            ? 'Failed'
+          : shownStatus === 'completed'
+            ? 'Completed'
+          : 'Received';
+        statusBadge.title = shownStatus === 'completed'
+          ? 'This turn has no active or queued agent dispatches.'
+          : shownStatus === 'received'
+            ? 'Message received; no agent dispatch is waiting.'
+            : 'Dispatch status.';
         header.appendChild(statusBadge);
       }
       if (td && turn.author !== 'you') {
@@ -416,15 +537,8 @@
       chatInner.appendChild(card);
     });
 
-    if (wasAtBottom) {
-      userScrolledUp = false;
-      chatArea.scrollTop = chatArea.scrollHeight;
-      newMsgsBtn.classList.add('hidden');
-    } else {
-      userScrolledUp = true;
-      chatArea.scrollTop = Math.max(0, chatArea.scrollHeight - previousDistanceFromBottom - chatArea.clientHeight);
-      newMsgsBtn.classList.remove('hidden');
-    }
+    restoreChatScrollState(scrollState);
+    saveActiveScrollState(true);
 
     requestAnimationFrame(() => {
       isRenderingChat = false;
@@ -582,7 +696,7 @@
 
   function mentionRegex(includeUser) {
     const names = mentionEntries(includeUser).map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    return new RegExp('@(' + names.join('|') + ')(?!\\w)', 'gi');
+    return new RegExp('(?<![\\\\\'"\\u2018\\u2019\\u201c\\u201d])@(' + names.join('|') + ')(?!\\w)', 'gi');
   }
 
   function agentMentions(text) {
@@ -630,6 +744,7 @@
       } : null,
       dispatch_state: {
         busy: Boolean(status.busy),
+        compacting: Boolean(status.compacting),
         current_agent: status.current_agent || status.agent || null,
         current_dispatch: status.current_dispatch || null,
         active_dispatches: status.active_dispatches || [],
@@ -1157,10 +1272,14 @@
     if (!sessionId) return;
     closeMobileDrawers();
     if (sessionId === activeSessionId) return;
+    saveActiveScrollState();
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
     activeSessionId = sessionId;
     latestAgentsMd = null;
-    userScrolledUp = false;
+    latestTurns = [];
+    latestTokenData = null;
+    chatInner.innerHTML = '';
+    userScrolledUp = Boolean(sessionScrollStates.get(sessionId) && !sessionScrollStates.get(sessionId).atBottom);
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1181,6 +1300,9 @@
     await loadSessions();
     activeSessionId = data.active_session_id;
     latestAgentsMd = null;
+    latestTurns = [];
+    latestTokenData = null;
+    chatInner.innerHTML = '';
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1200,6 +1322,9 @@
     sessions = data.sessions || [];
     activeSessionId = data.active_session_id || (sessions[0] && sessions[0].id) || null;
     latestAgentsMd = null;
+    latestTurns = [];
+    latestTokenData = null;
+    chatInner.innerHTML = '';
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1293,7 +1418,7 @@
       }
       latestTurns = turns;
       latestTokenData = tokenData;
-      renderTurns(turns, tokenData);
+      renderTurns(turns, tokenData, sessionScrollStates.get(targetSessionId));
       loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
       fetchStatus().catch((e) => console.error('Failed to refresh status:', e));
     } catch (e) {
@@ -1316,6 +1441,10 @@
     if (!activeSessionId) return;
     const text = resolveQuickReply(msgInput.value.trim());
     if (!text) return;
+    if (isCompactingStatus()) {
+      window.alert('Council is compacting. Wait for compaction to finish before sending another message.');
+      return;
+    }
 
     if (text.startsWith('/')) {
       const cmdName = text.split(/\s+/)[0].slice(1).toLowerCase();
@@ -1338,6 +1467,9 @@
       });
       if (!res.ok) {
         const err = await res.json();
+        if (res.status === 409 && err.error) {
+          window.alert(err.error);
+        }
         console.error('Send failed:', err.error);
       }
     } catch (e) {
@@ -1364,7 +1496,7 @@
     if (!activeSessionId) return;
     showConfirm(
       'Compact chat?',
-      'This will summarize older turns into an authoritative shared summary, then keep any new turns written while compaction is running. Council will refuse if agents are still thinking or queued.',
+      'This will summarize older turns into an authoritative shared summary. Council will refuse if agents are still thinking or queued, and sending is blocked until compaction finishes.',
       async () => {
         try {
           const res = await fetch(sessionApi('/compact'), { method: 'POST' });
@@ -1525,6 +1657,30 @@
       await fetchStatus();
     } catch (e) {
       console.error('Cancel dispatch request failed:', e);
+    }
+  }
+
+  async function promoteTurnDispatch(turn, turnIdx) {
+    if (!activeSessionId || !turn) return;
+    try {
+      const res = await fetch(sessionApi('/promote_turn'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          index: turnIdx,
+          event_line_idx: turn.event_line_idx,
+          author: turn.author,
+          display_ts: turn.time,
+          original_text: turn.body || '',
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error('Promote queued turn failed:', err.error || res.statusText);
+      }
+      await Promise.all([fetchChat(), fetchStatus()]);
+    } catch (e) {
+      console.error('Promote queued turn failed:', e);
     }
   }
 
@@ -1754,6 +1910,16 @@
       statusIndicator.innerHTML = '&#9679; idle';
       cancelBtn.classList.add('hidden');
     }
+    const compacting = isCompactingStatus(data);
+    sendNowBtn.disabled = compacting;
+    sendBtn.disabled = compacting;
+    msgInput.setAttribute('aria-disabled', compacting ? 'true' : 'false');
+    sendNowBtn.title = compacting
+      ? 'Wait for compaction to finish before sending'
+      : 'Send and start mentioned agents immediately';
+    sendBtn.title = compacting
+      ? 'Wait for compaction to finish before queueing'
+      : 'Queue (Ctrl+Enter)';
   }
 
   function renderCompactStatus(compact) {

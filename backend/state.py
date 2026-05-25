@@ -509,6 +509,7 @@ class Session:
     created_at: str = field(default_factory=utc_now)
     last_used_at: str = field(default_factory=utc_now)
     busy: bool = False
+    compacting: bool = False
     current_agent: Optional[str] = None
     current_dispatch: Optional[dict] = None
     current_dispatch_task: Optional[asyncio.Task] = None
@@ -854,6 +855,7 @@ class Session:
         await self.broadcast({
             "type": "status",
             "busy": self.busy,
+            "compacting": self.compacting,
             "agent": self.current_agent,
             "current_agent": self.current_agent,
             "current_dispatch": self.current_dispatch,
@@ -874,6 +876,17 @@ class Session:
     async def set_dispatch_queue(self, queue: list[dict]) -> None:
         self.dispatch_queue = queue
         await self.broadcast_status()
+
+    async def promote_queued_dispatches_for_header(self, header: str) -> int:
+        promoted = 0
+        for item in self.dispatch_queue:
+            if item.get("header") == header and item.get("mode") == "queued":
+                item["mode"] = "parallel"
+                item["promoted"] = True
+                promoted += 1
+        if promoted:
+            await self.broadcast_status()
+        return promoted
 
     async def set_current_dispatch(self, request: dict | None) -> None:
         self.current_dispatch = request.copy() if request else None
@@ -947,8 +960,15 @@ class Session:
         self.current_agent = agent
         await self.broadcast_status()
 
+    async def set_compacting(self):
+        self.compacting = True
+        self.busy = True
+        self.current_agent = "summarizer"
+        await self.broadcast_status()
+
     async def set_idle(self):
         if self.active_dispatches:
+            self.compacting = False
             self.busy = True
             self.current_dispatch = self.active_dispatches[0]
             self.current_agent = (
@@ -957,6 +977,7 @@ class Session:
             )
             await self.broadcast_status()
             return
+        self.compacting = False
         self.busy = False
         self.current_agent = None
         self.current_dispatch = None
