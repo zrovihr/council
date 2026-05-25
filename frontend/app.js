@@ -1974,6 +1974,41 @@
     return agentId;
   }
 
+  function makeCollapsibleSection(title, bodyChildren) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'config-collapsible';
+
+    const header = document.createElement('div');
+    header.className = 'config-collapsible-header';
+
+    const chevron = document.createElement('span');
+    chevron.className = 'config-chevron';
+    chevron.textContent = '\u25B6';
+
+    const titleEl = document.createElement('span');
+    titleEl.className = 'config-collapsible-title';
+    titleEl.textContent = title;
+
+    header.appendChild(chevron);
+    header.appendChild(titleEl);
+
+    const body = document.createElement('div');
+    body.className = 'config-collapsible-body collapsed';
+
+    for (const child of bodyChildren) {
+      body.appendChild(child);
+    }
+
+    header.addEventListener('click', () => {
+      wrapper.classList.toggle('open');
+      body.classList.toggle('collapsed');
+    });
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(body);
+    return wrapper;
+  }
+
   function renderConfig(agents, dispatchCfg) {
     if (configPanel.classList.contains('hidden')) return;
     const order = AGENT_IDS;
@@ -1981,10 +2016,6 @@
 
     const userSection = document.createElement('div');
     userSection.className = 'config-section config-user-section';
-    const userLabel = document.createElement('div');
-    userLabel.className = 'config-section-label';
-    userLabel.textContent = 'User display';
-    userSection.appendChild(userLabel);
     const userAliasWrap = document.createElement('label');
     userAliasWrap.textContent = 'Name';
     const userAlias = document.createElement('input');
@@ -2000,8 +2031,9 @@
     userColorWrap.textContent = 'Color';
     userColorWrap.appendChild(makeColorInput('you', colorFor('you', agents)));
     userSection.appendChild(userColorWrap);
-    configGrid.appendChild(userSection);
+    configGrid.appendChild(makeCollapsibleSection('User display', [userSection]));
 
+    const agentRows = [];
     for (const id of order) {
       const info = agents[id];
       if (!info) continue;
@@ -2068,16 +2100,13 @@
       row.appendChild(colorWrap);
       row.appendChild(keyWrap);
       row.appendChild(roleWrap);
-      configGrid.appendChild(row);
+      agentRows.push(row);
     }
+    configGrid.appendChild(makeCollapsibleSection('Agents', agentRows));
 
     const flashInfo = agents.deepseek || {};
     const flashSection = document.createElement('div');
     flashSection.className = 'config-section config-flash-section';
-    const flashLabel = document.createElement('div');
-    flashLabel.className = 'config-section-label';
-    flashLabel.textContent = 'Deepseek Flash summarizer';
-    flashSection.appendChild(flashLabel);
     const flashModelWrap = document.createElement('label');
     flashModelWrap.textContent = 'Flash model';
     const flashModel = document.createElement('input');
@@ -2092,14 +2121,10 @@
     flashKeyWrap.appendChild(makeSecretInput('deepseek_flash', flashInfo.flash_key_saved));
     flashSection.appendChild(flashModelWrap);
     flashSection.appendChild(flashKeyWrap);
-    configGrid.appendChild(flashSection);
+    configGrid.appendChild(makeCollapsibleSection('Deepseek Flash summarizer', [flashSection]));
 
     const dispatchSection = document.createElement('div');
     dispatchSection.className = 'config-section';
-    const dispatchLabel = document.createElement('div');
-    dispatchLabel.className = 'config-section-label';
-    dispatchLabel.textContent = 'Dispatch limits';
-    dispatchSection.appendChild(dispatchLabel);
 
     const dispatchKeys = ['chain_depth_limit', 'timeout_seconds', 'max_prompt_chars'];
     for (const key of dispatchKeys) {
@@ -2115,15 +2140,11 @@
       wrap.appendChild(input);
       dispatchSection.appendChild(wrap);
     }
-    configGrid.appendChild(dispatchSection);
+    configGrid.appendChild(makeCollapsibleSection('Dispatch limits', [dispatchSection]));
 
     const hermesDispatch = dispatchCfg && dispatchCfg.hermes || {};
     const hermesSection = document.createElement('div');
     hermesSection.className = 'config-section';
-    const hermesLabel = document.createElement('div');
-    hermesLabel.className = 'config-section-label';
-    hermesLabel.textContent = 'Hermes/API bridge';
-    hermesSection.appendChild(hermesLabel);
 
     const hermesUrlWrap = document.createElement('label');
     hermesUrlWrap.textContent = 'Base URL';
@@ -2161,14 +2182,10 @@
     });
     hermesHeaderWrap.appendChild(hermesSessionHeader);
     hermesSection.appendChild(hermesHeaderWrap);
-    configGrid.appendChild(hermesSection);
+    configGrid.appendChild(makeCollapsibleSection('Hermes/API bridge', [hermesSection]));
 
     const attachmentSection = document.createElement('div');
     attachmentSection.className = 'config-section config-attachment-section';
-    const attachmentLabel = document.createElement('div');
-    attachmentLabel.className = 'config-section-label';
-    attachmentLabel.textContent = 'Attachment prompts';
-    attachmentSection.appendChild(attachmentLabel);
 
     const attachmentPolicies = dispatchCfg && dispatchCfg.attachments || {};
     for (const id of order) {
@@ -2179,14 +2196,10 @@
       wrap.appendChild(makeAttachmentPolicySelect(id, attachmentPolicies[id]));
       attachmentSection.appendChild(wrap);
     }
-    configGrid.appendChild(attachmentSection);
+    configGrid.appendChild(makeCollapsibleSection('Attachment prompts', [attachmentSection]));
 
     const agentsDocSection = document.createElement('div');
     agentsDocSection.className = 'config-section config-agents-md-section';
-    const agentsDocLabel = document.createElement('div');
-    agentsDocLabel.className = 'config-section-label';
-    agentsDocLabel.textContent = 'Session AGENTS.md';
-    agentsDocSection.appendChild(agentsDocLabel);
 
     const agentsDocMeta = document.createElement('div');
     agentsDocMeta.className = 'config-agents-md-meta';
@@ -2232,7 +2245,7 @@
       agentsDocPanel.appendChild(agentsDoc);
       agentsDocSection.appendChild(agentsDocPanel);
     }
-    configGrid.appendChild(agentsDocSection);
+    configGrid.appendChild(makeCollapsibleSection('Session AGENTS.md', [agentsDocSection]));
   }
 
   const acBox = document.createElement('div');

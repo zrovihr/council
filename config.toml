@@ -67,6 +67,11 @@ base_url = "http://127.0.0.1:8642/v1"
 session_key = "agent:main:discord:dm:1467704410766311599"
 session_header = "X-Hermes-Session-Key"
 
+[ui]
+
+[ui.colors]
+you = "#ff7262"
+
 [compact]
 auto_threshold_lines = 2000
 warning_lines_remaining = 200

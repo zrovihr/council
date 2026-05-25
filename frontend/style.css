@@ -761,9 +761,47 @@ body {
   margin-top: 6px;
 }
 .config-section {
+}
+.config-collapsible {
   border-top: 1px solid var(--border);
   margin-top: 6px;
-  padding-top: 8px;
+}
+.config-collapsible:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+.config-collapsible-header {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  padding: 8px 0;
+  user-select: none;
+}
+.config-collapsible-header:hover {
+  color: var(--text);
+}
+.config-chevron {
+  color: var(--text-dim);
+  display: inline-block;
+  font-size: 9px;
+  transition: transform 0.15s;
+}
+.config-collapsible.open .config-chevron {
+  transform: rotate(90deg);
+}
+.config-collapsible-title {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.config-collapsible-header:hover .config-collapsible-title {
+  color: var(--text);
+}
+.config-collapsible-body.collapsed {
+  display: none;
 }
 .config-section-label {
   color: var(--text-dim);
