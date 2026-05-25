@@ -488,10 +488,10 @@ body {
   white-space: nowrap;
 }
 
-.agent-model.claude { border-color: rgba(125,211,252,0.35); }
-.agent-model.codex { border-color: rgba(196,181,253,0.35); }
-.agent-model.deepseek { border-color: rgba(253,186,116,0.35); }
-.agent-model.hermes { border-color: rgba(134,239,172,0.35); }
+.agent-model.claude { border-color: var(--claude); color: var(--claude); }
+.agent-model.codex { border-color: var(--codex); color: var(--codex); }
+.agent-model.deepseek { border-color: var(--deepseek); color: var(--deepseek); }
+.agent-model.hermes { border-color: var(--hermes); color: var(--hermes); }
 
 #status-indicator {
   font-size: 12px;
@@ -512,9 +512,9 @@ body {
 }
 
 #compact-status.warning {
-  color: #fde68a;
-  border-color: rgba(234,179,8,0.55);
-  background: rgba(234,179,8,0.08);
+  color: #fed7aa;
+  border-color: rgba(249,115,22,0.62);
+  background: rgba(249,115,22,0.10);
 }
 
 #compact-status.danger {
@@ -693,7 +693,7 @@ body {
 }
 .config-row {
   display: grid;
-  grid-template-columns: 82px repeat(5, minmax(110px, 1fr));
+  grid-template-columns: 82px repeat(6, minmax(96px, 1fr));
   gap: 8px;
   align-items: start;
 }
@@ -706,6 +706,7 @@ body {
 .config-row.claude .config-agent { color: var(--claude); }
 .config-row.codex .config-agent { color: var(--codex); }
 .config-row.deepseek .config-agent { color: var(--deepseek); }
+.config-row.hermes .config-agent { color: var(--hermes); }
 .config-row label {
   color: var(--text-dim);
   display: flex;
@@ -745,6 +746,12 @@ body {
   color: #71717a;
   cursor: not-allowed;
   opacity: 0.7;
+}
+.config-row input[type="color"],
+.config-section input[type="color"] {
+  cursor: pointer;
+  height: 30px;
+  padding: 2px;
 }
 #config-status {
   color: var(--text-dim);
@@ -789,7 +796,7 @@ body {
 .config-user-section {
   align-items: end;
   display: grid;
-  grid-template-columns: 180px minmax(180px, 320px);
+  grid-template-columns: 180px minmax(180px, 320px) 96px;
   gap: 8px;
 }
 .config-user-section .config-section-label {

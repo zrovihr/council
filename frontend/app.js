@@ -64,6 +64,14 @@
   let openTurnMenu = null;
   let renamingSessionId = null;
   const AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
+  const COLOR_IDS = ['you', ...AGENT_IDS];
+  const DEFAULT_COLORS = {
+    you: '#ffffff',
+    claude: '#7dd3fc',
+    codex: '#c4b5fd',
+    deepseek: '#fdba74',
+    hermes: '#86efac',
+  };
   const ATTACHMENT_POLICY_OPTIONS = [
     ['path-visible', 'Path visible'],
     ['placeholder', 'Placeholder only'],
@@ -932,6 +940,27 @@
     return parts[parts.length - 1] || projectRoot;
   }
 
+  function normalizeHexColor(value, fallback) {
+    const color = String(value || '').trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(color)) return color.toLowerCase();
+    if (/^#[0-9a-fA-F]{3}$/.test(color)) {
+      return '#' + color.slice(1).split('').map((ch) => ch + ch).join('').toLowerCase();
+    }
+    return fallback;
+  }
+
+  function colorFor(id, agents = latestAgents) {
+    const info = agents[id] || {};
+    return normalizeHexColor(info.color, DEFAULT_COLORS[id] || '#ffffff');
+  }
+
+  function applyAgentColors(agents) {
+    const root = document.documentElement;
+    for (const id of COLOR_IDS) {
+      root.style.setProperty(`--${id}`, colorFor(id, agents));
+    }
+  }
+
   function renderSessions() {
     if (renamingSessionId) return;
     sessionList.innerHTML = '';
@@ -1664,6 +1693,7 @@
     latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
     latestDispatch = data.dispatch || {};
     latestGlobalDispatch = data.global_dispatch || latestGlobalDispatch || {};
+    applyAgentColors(latestAgents);
     if (latestTurns.length) {
       renderTurns(latestTurns, latestTokenData);
     }
@@ -1703,13 +1733,19 @@
 
     const remaining = Number(compact.remaining_lines || 0);
     const remainingPct = Number(compact.remaining_percent || 0);
+    const usedPct = Number(compact.used_percent || 0);
+    const suggestPct = Number(compact.suggest_used_percent || 80);
+    const shouldCompact = Boolean(compact.should_compact);
+    const warnCompact = Boolean(shouldCompact || compact.warning);
     compactStatusEl.className = compact.over_threshold
       ? 'danger'
-      : (compact.warning ? 'warning' : '');
+      : (warnCompact ? 'warning' : '');
     compactStatusEl.textContent = compact.over_threshold
       ? 'compact due'
-      : `compact ${remainingPct}% left`;
-    compactStatusEl.title = `${remaining} lines until auto compact (${compact.line_count}/${compact.threshold_lines})`;
+      : (warnCompact ? `compact suggested ${usedPct}%` : `compact ${remainingPct}% left`);
+    compactStatusEl.title = warnCompact
+      ? `Suggested at ${suggestPct}% used; currently ${usedPct}% used; ${remaining} lines until auto compact (${compact.line_count}/${compact.threshold_lines})`
+      : `${remaining} lines until auto compact (${compact.line_count}/${compact.threshold_lines})`;
   }
 
   function dispatchLabel(item) {
@@ -1901,6 +1937,20 @@
     return frag;
   }
 
+  function makeColorInput(id, value) {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = colorFor(id, { [id]: { color: value } });
+    input.title = `Set ${id} color`;
+    input.addEventListener('input', () => {
+      document.documentElement.style.setProperty(`--${id}`, input.value);
+    });
+    input.addEventListener('change', () => {
+      patchConfig({ ui: { colors: { [id]: input.value } } });
+    });
+    return input;
+  }
+
   function makeSecretInput(keyName, saved, disabled) {
     const input = document.createElement('input');
     input.type = 'password';
@@ -1946,6 +1996,10 @@
     });
     userAliasWrap.appendChild(userAlias);
     userSection.appendChild(userAliasWrap);
+    const userColorWrap = document.createElement('label');
+    userColorWrap.textContent = 'Color';
+    userColorWrap.appendChild(makeColorInput('you', colorFor('you', agents)));
+    userSection.appendChild(userColorWrap);
     configGrid.appendChild(userSection);
 
     for (const id of order) {
@@ -1982,6 +2036,10 @@
       effortWrap.textContent = 'Effort';
       effortWrap.appendChild(makeSelect(id, 'effort', info.effort || '', info.effort_options || []));
 
+      const colorWrap = document.createElement('label');
+      colorWrap.textContent = 'Color';
+      colorWrap.appendChild(makeColorInput(id, colorFor(id, agents)));
+
       const keyWrap = document.createElement('label');
       const cliManaged = ['claude_cli', 'codex_cli', 'opencode'].includes(info.provider || '');
       keyWrap.textContent = info.provider === 'openrouter'
@@ -2007,6 +2065,7 @@
       row.appendChild(providerWrap);
       row.appendChild(modelWrap);
       row.appendChild(effortWrap);
+      row.appendChild(colorWrap);
       row.appendChild(keyWrap);
       row.appendChild(roleWrap);
       configGrid.appendChild(row);

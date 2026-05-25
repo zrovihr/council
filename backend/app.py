@@ -97,6 +97,7 @@ def _allowed_config_changes(body: dict) -> dict:
         "providers",
         "api_keys",
         "aliases",
+        "ui",
     }
     return {
         section: value

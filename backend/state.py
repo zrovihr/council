@@ -21,6 +21,16 @@ SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TURN_HEADER_LINE_RE = re.compile(r"^##\s+\[@\w+\]\s+.+$")
+COLOR_KEYS = (*AGENTS, "you", "summarizer", "system")
+DEFAULT_UI_COLORS = {
+    "claude": "#7dd3fc",
+    "codex": "#c4b5fd",
+    "deepseek": "#fdba74",
+    "hermes": "#86efac",
+    "you": "#ffffff",
+    "summarizer": "#a3a3a3",
+    "system": "#6b7280",
+}
 
 
 def utc_now() -> str:
@@ -91,6 +101,7 @@ def write_config(path: Path, config: dict) -> None:
         "model_options",
         "effort_options",
         "dispatch",
+        "ui",
         "compact",
     ]
     lines: list[str] = []
@@ -134,7 +145,7 @@ def overlay_config(config: dict, session_state: dict | None) -> dict:
         for key, value in overrides.items():
             if value is None or value == "":
                 continue
-            if section == "dispatch" and isinstance(value, dict):
+            if isinstance(value, dict):
                 nested_target = target.setdefault(key, {})
                 if not isinstance(nested_target, dict):
                     nested_target = {}
@@ -224,6 +235,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
     providers = effective.get("providers", {})
     api_keys = effective.get("api_keys", {})
     aliases = effective.get("aliases", {})
+    ui_colors = (effective.get("ui") or {}).get("colors") or {}
     model_options = effective.get("model_options", {})
     effort_options = effective.get("effort_options", {})
     claude_provider = infer_provider_for_model(
@@ -243,6 +255,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "label": "You",
             "alias": str(aliases.get("you") or "you"),
             "runtime_family": "you",
+            "color": str(ui_colors.get("you") or DEFAULT_UI_COLORS["you"]),
         },
         "claude": {
             "label": "Claude",
@@ -258,6 +271,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "model_options": model_options.get("claude", []),
             "effort_options": effort_options.get("claude", []),
             "api_key_saved": _key_saved(api_keys, "claude", claude_provider),
+            "color": str(ui_colors.get("claude") or DEFAULT_UI_COLORS["claude"]),
             "note": "Uses the Claude CLI default model unless configured there.",
         },
         "codex": {
@@ -274,6 +288,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "model_options": model_options.get("codex", []),
             "effort_options": effort_options.get("codex", []),
             "api_key_saved": _key_saved(api_keys, "codex", codex_provider),
+            "color": str(ui_colors.get("codex") or DEFAULT_UI_COLORS["codex"]),
             "note": "Uses the Codex CLI default model unless configured there.",
         },
         "deepseek": {
@@ -290,6 +305,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "model_options": model_options.get("deepseek", []),
             "effort_options": effort_options.get("deepseek", []),
             "api_key_saved": _key_saved(api_keys, "deepseek", deepseek_provider),
+            "color": str(ui_colors.get("deepseek") or DEFAULT_UI_COLORS["deepseek"]),
             "flash_model": models.get("deepseek_flash", "deepseek/deepseek-v4-flash"),
             "flash_key_saved": bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek")),
             "note": "Configured in Council config.toml or this session.",
@@ -308,6 +324,7 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "model_options": model_options.get("hermes", []),
             "effort_options": effort_options.get("hermes", []),
             "api_key_saved": _key_saved(api_keys, "hermes", hermes_provider),
+            "color": str(ui_colors.get("hermes") or DEFAULT_UI_COLORS["hermes"]),
             "note": "Routes through Hermes api_server, usually http://localhost:8642/v1.",
         },
     }
@@ -586,6 +603,13 @@ class Session:
             warning_lines = int(compact_config.get("warning_lines_remaining") or 200)
         except (TypeError, ValueError):
             warning_lines = 200
+        try:
+            suggest_used_percent = int(
+                compact_config.get("suggest_used_percent") or 80
+            )
+        except (TypeError, ValueError):
+            suggest_used_percent = 80
+        suggest_used_percent = max(1, min(99, suggest_used_percent))
 
         if self.chat_path.exists():
             text = self.chat_path.read_text(encoding="utf-8", errors="replace")
@@ -601,6 +625,8 @@ class Session:
                 "remaining_lines": None,
                 "remaining_percent": None,
                 "used_percent": None,
+                "suggest_used_percent": suggest_used_percent,
+                "should_compact": False,
                 "warning": False,
                 "over_threshold": False,
             }
@@ -608,6 +634,7 @@ class Session:
         remaining = threshold - line_count
         remaining_percent = max(0, min(100, round((remaining / threshold) * 100)))
         used_percent = max(0, min(100, round((line_count / threshold) * 100)))
+        should_compact = used_percent >= suggest_used_percent
         return {
             "enabled": True,
             "line_count": line_count,
@@ -615,7 +642,9 @@ class Session:
             "remaining_lines": max(0, remaining),
             "remaining_percent": remaining_percent,
             "used_percent": used_percent,
-            "warning": remaining <= warning_lines,
+            "suggest_used_percent": suggest_used_percent,
+            "should_compact": should_compact,
+            "warning": should_compact or remaining <= warning_lines,
             "over_threshold": remaining <= 0,
         }
 
@@ -1029,6 +1058,17 @@ class Session:
                         alias = alias.lower()
                     target[key] = alias
                     continue
+                if section == "ui":
+                    if key != "colors" or not isinstance(value, dict):
+                        continue
+                    colors = target.setdefault("colors", {})
+                    if not isinstance(colors, dict):
+                        colors = {}
+                        target["colors"] = colors
+                    for color_key, color_value in value.items():
+                        if color_key in COLOR_KEYS:
+                            colors[color_key] = str(color_value).strip()
+                    continue
                 if key not in AGENTS:
                     continue
                 target[key] = str(value)
@@ -1350,6 +1390,17 @@ class SessionRegistry:
                     if key in AGENTS:
                         alias = alias.lower()
                     target[key] = alias
+                    continue
+                if section == "ui":
+                    if key != "colors" or not isinstance(value, dict):
+                        continue
+                    colors = target.setdefault("colors", {})
+                    if not isinstance(colors, dict):
+                        colors = {}
+                        target["colors"] = colors
+                    for color_key, color_value in value.items():
+                        if color_key in COLOR_KEYS:
+                            colors[color_key] = str(color_value).strip()
                     continue
                 if key not in AGENTS:
                     continue
