@@ -1,10 +1,10 @@
 # Council App
 
-<img alt="Council logo" src="thecouncil_logo_small.png" align="right" width="120" />
+<img alt="Council logo" src="https://github.com/user-attachments/assets/c2001935-e93f-46c4-a217-5c98f6a0052d" align="right" width="120" />
 
 Local browser-based multi-agent chat. User talks to configurable agent slots through Council-owned sessions stored project-locally under `<project>/.council/sessions/`. The default slots are Claude, Codex, Deepseek, and Hermes, but the visible mention names, providers, models, roles, endpoints, and tokens can be changed from the Config panel. Each session has its own project root, chat transcript, event log, compaction records, private agent memory, and config overrides.
 
-<img alt="Council screenshot" src="ss.png" width="900" />
+<img alt="Council screenshot" src="https://github.com/user-attachments/assets/5c7e4f64-31a5-46c7-a2ac-875deb1b2f65" width="900" />
 
 ## One-time Setup
 
