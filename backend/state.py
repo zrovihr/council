@@ -21,7 +21,7 @@ SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TURN_HEADER_LINE_RE = re.compile(r"^##\s+\[@\w+\]\s+.+$")
-COLOR_KEYS = (*AGENTS, "you", "summarizer", "system")
+COLOR_KEYS = (*AGENTS, "you", "summarizer", "system", "primary")
 DEFAULT_UI_COLORS = {
     "claude": "#7dd3fc",
     "codex": "#c4b5fd",
@@ -30,6 +30,7 @@ DEFAULT_UI_COLORS = {
     "you": "#ffffff",
     "summarizer": "#a3a3a3",
     "system": "#6b7280",
+    "primary": "#00ff41",
 }
 
 
@@ -251,6 +252,9 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
         "hermes", _provider_for(providers, "hermes"), models.get("hermes", "")
     )
     return {
+        "_ui": {
+            "primary": str(ui_colors.get("primary") or DEFAULT_UI_COLORS["primary"]),
+        },
         "you": {
             "label": "You",
             "alias": str(aliases.get("you") or "you"),

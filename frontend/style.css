@@ -6,7 +6,7 @@
   --border: #27272a;
   --text: #dcdcdc;
   --text-dim: #a1a1aa;
-  --accent: #f59e0b;
+  --accent: #00ff41;
   --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
   --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   --claude: #7dd3fc;
@@ -32,6 +32,17 @@ body {
   line-height: 1.6;
   height: 100vh;
   overflow: hidden;
+}
+
+#mobile-drawer-backdrop {
+  background: rgba(0,0,0,0.58);
+  inset: 0;
+  position: fixed;
+  z-index: 180;
+}
+
+#mobile-drawer-backdrop.hidden {
+  display: none;
 }
 
 #app {
@@ -174,8 +185,8 @@ body {
 }
 
 .session-item.active {
-  background: rgba(245,158,11,0.12);
-  border-color: rgba(245,158,11,0.55);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .session-text {
@@ -425,18 +436,18 @@ body {
 #council-logo .the {
   font-size: 10px;
   font-weight: 400;
-  color: #4ade80;
+  color: var(--accent);
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  text-shadow: 0 0 6px rgba(74,222,128,0.4);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 #council-logo .council {
   font-size: 16px;
   font-weight: 700;
-  color: #4ade80;
+  color: var(--accent);
   letter-spacing: 0.1em;
-  text-shadow: 0 0 10px rgba(74,222,128,0.5);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 /* ---- Top Bar ---- */
@@ -450,6 +461,25 @@ body {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   min-width: 0;
+}
+
+.mobile-top-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  display: none;
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  height: 44px;
+  line-height: 1;
+  width: 44px;
+}
+
+.mobile-top-btn:hover {
+  border-color: var(--accent);
 }
 
 #project-block {
@@ -958,6 +988,25 @@ body {
   outline: none;
 }
 
+.config-theme-section {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 140px 140px;
+}
+
+.config-theme-section label {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 0;
+  text-transform: uppercase;
+}
+
+.config-theme-section input {
+  width: 100%;
+}
+
 #global-config-toggle {
   align-items: center;
   color: var(--text-dim);
@@ -1014,6 +1063,8 @@ body {
   border-radius: 6px;
   padding: 12px 16px;
   background: var(--surface);
+  content-visibility: auto;
+  contain-intrinsic-size: 200px;
 }
 
 .turn-header {
@@ -1097,8 +1148,8 @@ body {
 }
 
 .turn-mode-badge.queued {
-  background: rgba(245,158,11,0.10);
-  color: #fbbf24;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
 }
 
 .turn-status-badge {
@@ -1407,7 +1458,7 @@ body {
 .turn-tool-chip.has-path:hover,
 .turn-tool-chip.has-path:focus-visible {
   background: rgba(255,255,255,0.07);
-  border-color: rgba(245,158,11,0.34);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
   outline: none;
 }
 
@@ -1520,7 +1571,7 @@ body {
   left: calc(220px + (100vw - 540px) / 2);
   transform: translateX(-50%);
   background: var(--accent);
-  color: #fff;
+  color: #06110a;
   border: none;
   border-radius: 20px;
   padding: 6px 18px;
@@ -1675,7 +1726,7 @@ body {
 
 #send-now-btn {
   background: var(--accent);
-  color: #fff;
+  color: #06110a;
 }
 
 #send-btn {
@@ -1719,7 +1770,7 @@ body {
 }
 .ac-row.selected,
 .ac-row:hover {
-  background: rgba(245,158,11,0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .ac-kind {
   font-size: 10px;
@@ -1734,7 +1785,7 @@ body {
   color: var(--claude);
 }
 .ac-kind-quick {
-  background: rgba(245,158,11,0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent);
 }
 .ac-kind-command {
@@ -1771,14 +1822,162 @@ body {
   #app {
     grid-template-columns: 1fr;
   }
-  #session-rail {
+
+  body {
+    height: 100dvh;
+  }
+
+  #council-logo,
+  #agent-models,
+  #agent-buttons,
+  #trace-panel,
+  #help-btn,
+  #compact-btn,
+  #erase-btn {
     display: none;
   }
+
+  #session-rail {
+    bottom: 0;
+    box-shadow: 16px 0 38px rgba(0,0,0,0.45);
+    display: flex;
+    left: 0;
+    max-width: 86vw;
+    position: fixed;
+    top: 0;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    width: 300px;
+    z-index: 190;
+  }
+
+  body.mobile-sessions-open #session-rail {
+    transform: translateX(0);
+  }
+
+  .mobile-top-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   #new-msgs-btn {
     left: 50%;
   }
+
   #top-bar {
+    gap: 8px;
+    min-height: 50px;
+    padding: 8px 10px;
+  }
+
+  #project-name {
+    font-size: 13px;
+  }
+
+  #config-toggle-btn {
+    font-size: 0;
+    height: 44px;
+    padding: 0;
+    width: 44px;
+  }
+
+  #config-toggle-btn::before {
+    content: "Cfg";
+    font-size: 11px;
+  }
+
+  #status-indicator,
+  #compact-status {
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+
+  #queue-btn,
+  #cancel-btn {
+    font-size: 11px;
+    min-height: 44px;
+    padding: 5px 8px;
+  }
+
+  #config-panel {
+    border-bottom: none;
+    border-left: 1px solid var(--border);
+    bottom: 0;
+    box-shadow: -16px 0 38px rgba(0,0,0,0.45);
+    max-height: none;
+    max-width: 90vw;
+    padding: 12px;
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: 340px;
+    z-index: 190;
+  }
+
+  #chat-area {
+    padding: 10px;
+  }
+
+  #chat-inner {
+    gap: 8px;
+  }
+
+  .turn-card {
+    border-radius: 5px;
+    padding: 10px;
+  }
+
+  .turn-header {
+    align-items: center;
     flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .turn-more-wrap,
+  .turn-erase-btn,
+  .turn-edit-btn {
+    display: block;
+  }
+
+  .turn-body {
+    overflow-wrap: anywhere;
+  }
+
+  #input-bar {
+    bottom: 0;
+    gap: 8px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    position: sticky;
+    z-index: 120;
+  }
+
+  #msg-input,
+  #msg-highlights {
+    font-size: 14px;
+    min-height: 72px;
+  }
+
+  #send-actions {
+    width: 72px;
+  }
+
+  #send-now-btn,
+  #send-btn,
+  .session-item,
+  .session-ctx-item,
+  .config-collapsible-header,
+  .config-panel-btn {
+    min-height: 44px;
+  }
+
+  .config-row,
+  .config-theme-section,
+  .config-user-section,
+  .config-flash-section,
+  .config-attachment-section,
+  .config-agents-md-section {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -2101,7 +2300,7 @@ body {
   cursor: pointer;
 }
 .file-menu-item:hover {
-  background: rgba(245,158,11,0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
 }
 

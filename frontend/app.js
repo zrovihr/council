@@ -24,6 +24,8 @@
   const queueMenu = document.getElementById('queue-menu');
   const projectNameEl = document.getElementById('project-name');
   const agentModelsEl = document.getElementById('agent-models');
+  const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+  const mobileDrawerBackdrop = document.getElementById('mobile-drawer-backdrop');
   const configToggleBtn = document.getElementById('config-toggle-btn');
   const configPanel = document.getElementById('config-panel');
   const configGrid = document.getElementById('config-grid');
@@ -58,6 +60,8 @@
   let latestTraceEvents = [];
   let latestTurns = [];
   let latestTokenData = null;
+  let chatFetchFrame = null;
+  let chatFetchQueued = false;
   let sessions = [];
   let activeSessionId = null;
   let editState = null;
@@ -71,6 +75,7 @@
     codex: '#c4b5fd',
     deepseek: '#fdba74',
     hermes: '#86efac',
+    primary: '#00ff41',
   };
   const ATTACHMENT_POLICY_OPTIONS = [
     ['path-visible', 'Path visible'],
@@ -950,15 +955,31 @@
   }
 
   function colorFor(id, agents = latestAgents) {
+    if (id === 'primary') {
+      const ui = agents._ui || {};
+      return normalizeHexColor(ui.primary, DEFAULT_COLORS.primary);
+    }
     const info = agents[id] || {};
     return normalizeHexColor(info.color, DEFAULT_COLORS[id] || '#ffffff');
   }
 
   function applyAgentColors(agents) {
     const root = document.documentElement;
+    root.style.setProperty('--accent', colorFor('primary', agents));
     for (const id of COLOR_IDS) {
       root.style.setProperty(`--${id}`, colorFor(id, agents));
     }
+  }
+
+  function closeMobileDrawers() {
+    document.body.classList.remove('mobile-sessions-open');
+    mobileDrawerBackdrop.classList.add('hidden');
+  }
+
+  function openMobileSessions() {
+    configPanel.classList.add('hidden');
+    document.body.classList.add('mobile-sessions-open');
+    mobileDrawerBackdrop.classList.remove('hidden');
   }
 
   function renderSessions() {
@@ -1133,7 +1154,9 @@
   }
 
   async function switchSession(sessionId) {
-    if (!sessionId || sessionId === activeSessionId) return;
+    if (!sessionId) return;
+    closeMobileDrawers();
+    if (sessionId === activeSessionId) return;
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
     activeSessionId = sessionId;
     latestAgentsMd = null;
@@ -1276,6 +1299,17 @@
     } catch (e) {
       console.error('Failed to fetch chat:', e);
     }
+  }
+
+  function scheduleFetchChat() {
+    chatFetchQueued = true;
+    if (chatFetchFrame !== null) return;
+    chatFetchFrame = requestAnimationFrame(() => {
+      chatFetchFrame = null;
+      if (!chatFetchQueued) return;
+      chatFetchQueued = false;
+      fetchChat();
+    });
   }
 
   async function sendMessage(dispatchMode = 'parallel') {
@@ -1655,7 +1689,7 @@
         const msg = JSON.parse(event.data);
         if (msg.session_id && msg.session_id !== activeSessionId) return;
         if (msg.type === 'chat_update') {
-          fetchChat();
+          scheduleFetchChat();
         } else if (msg.type === 'status') {
           latestStatus = msg;
           updateStatus(msg);
@@ -1940,10 +1974,11 @@
   function makeColorInput(id, value) {
     const input = document.createElement('input');
     input.type = 'color';
-    input.value = colorFor(id, { [id]: { color: value } });
+    input.value = normalizeHexColor(value, DEFAULT_COLORS[id] || '#ffffff');
     input.title = `Set ${id} color`;
     input.addEventListener('input', () => {
-      document.documentElement.style.setProperty(`--${id}`, input.value);
+      const variable = id === 'primary' ? '--accent' : `--${id}`;
+      document.documentElement.style.setProperty(variable, input.value);
     });
     input.addEventListener('change', () => {
       patchConfig({ ui: { colors: { [id]: input.value } } });
@@ -2013,6 +2048,24 @@
     if (configPanel.classList.contains('hidden')) return;
     const order = AGENT_IDS;
     configGrid.innerHTML = '';
+
+    const themeSection = document.createElement('div');
+    themeSection.className = 'config-section config-theme-section';
+    const primaryColorWrap = document.createElement('label');
+    primaryColorWrap.textContent = 'Primary';
+    primaryColorWrap.appendChild(makeColorInput('primary', colorFor('primary', agents)));
+    themeSection.appendChild(primaryColorWrap);
+
+    const resetThemeBtn = document.createElement('button');
+    resetThemeBtn.type = 'button';
+    resetThemeBtn.className = 'config-panel-btn';
+    resetThemeBtn.textContent = 'Reset primary';
+    resetThemeBtn.addEventListener('click', () => {
+      document.documentElement.style.setProperty('--accent', DEFAULT_COLORS.primary);
+      patchConfig({ ui: { colors: { primary: DEFAULT_COLORS.primary } } });
+    });
+    themeSection.appendChild(resetThemeBtn);
+    configGrid.appendChild(makeCollapsibleSection('Theme', [themeSection]));
 
     const userSection = document.createElement('div');
     userSection.className = 'config-section config-user-section';
@@ -2558,13 +2611,27 @@
     if (e.key === 'Escape' && !helpOverlay.classList.contains('hidden')) {
       helpOverlay.classList.add('hidden');
     }
+    if (e.key === 'Escape') {
+      closeMobileDrawers();
+    }
     if (e.key === 'Escape' && openTurnMenu) {
       openTurnMenu.classList.add('hidden');
       openTurnMenu = null;
     }
   });
+  mobileMenuBtn.addEventListener('click', openMobileSessions);
+  mobileDrawerBackdrop.addEventListener('click', () => {
+    configPanel.classList.add('hidden');
+    closeMobileDrawers();
+  });
   configToggleBtn.addEventListener('click', async () => {
+    closeMobileDrawers();
     configPanel.classList.toggle('hidden');
+    if (!configPanel.classList.contains('hidden') && window.matchMedia('(max-width: 760px)').matches) {
+      mobileDrawerBackdrop.classList.remove('hidden');
+    } else {
+      mobileDrawerBackdrop.classList.add('hidden');
+    }
     if (configPanel.classList.contains('hidden')) return;
     if (!latestAgentsMd) {
       configStatus.textContent = 'loading AGENTS.md...';
