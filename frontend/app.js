@@ -62,6 +62,7 @@
   let activeSessionId = null;
   let editState = null;
   let openTurnMenu = null;
+  let renamingSessionId = null;
   const AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
   const ATTACHMENT_POLICY_OPTIONS = [
     ['path-visible', 'Path visible'],
@@ -789,6 +790,30 @@
     msgHighlights.scrollLeft = msgInput.scrollLeft;
   }
 
+  function syncComposerHeight() {
+    msgInput.style.height = 'auto';
+    const nextHeight = Math.min(Math.max(msgInput.scrollHeight, 64), 220);
+    msgInput.style.height = nextHeight + 'px';
+    msgHighlights.style.height = nextHeight + 'px';
+    msgHighlights.scrollTop = msgInput.scrollTop;
+    msgHighlights.scrollLeft = msgInput.scrollLeft;
+  }
+
+  function refreshComposer() {
+    syncComposerHeight();
+    updateComposerHighlights();
+  }
+
+  function replaceComposerRange(start, end, text) {
+    msgInput.focus();
+    msgInput.setSelectionRange(start, end);
+    const usedNativeInsert = document.execCommand && document.execCommand('insertText', false, text);
+    if (!usedNativeInsert) {
+      msgInput.setRangeText(text, start, end, 'end');
+      msgInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
   function insertAtCursor(text) {
     const value = msgInput.value;
     const start = msgInput.selectionStart || 0;
@@ -796,11 +821,8 @@
     const prefix = start > 0 && value[start - 1] !== '\n' ? '\n' : '';
     const suffix = end < value.length && value[end] !== '\n' ? '\n' : '';
     const inserted = prefix + text + suffix;
-    msgInput.value = value.slice(0, start) + inserted + value.slice(end);
-    const caret = start + inserted.length;
-    msgInput.setSelectionRange(caret, caret);
-    msgInput.focus();
-    updateComposerHighlights();
+    replaceComposerRange(start, end, inserted);
+    refreshComposer();
   }
 
   function readFileAsDataURL(file) {
@@ -911,6 +933,7 @@
   }
 
   function renderSessions() {
+    if (renamingSessionId) return;
     sessionList.innerHTML = '';
     for (const session of sessions) {
       const item = document.createElement('button');
@@ -1034,6 +1057,7 @@
   function startRenameSession(sessionId, nameEl) {
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return;
+    renamingSessionId = sessionId;
     const currentName = session.name || session.id;
     const input = document.createElement('input');
     input.type = 'text';
@@ -1045,19 +1069,28 @@
     input.focus();
     input.setSelectionRange(0, input.value.length);
 
+    let finishing = false;
     const finish = async () => {
+      if (finishing) return;
+      finishing = true;
       const newName = input.value.trim();
+      renamingSessionId = null;
       if (newName && newName !== currentName) {
         await renameSession(sessionId, newName);
       } else {
-        input.replaceWith(nameEl);
+        renderSessions();
       }
     };
 
     input.addEventListener('blur', finish);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-      if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        renamingSessionId = null;
+        finishing = true;
+        renderSessions();
+      }
     });
   }
 
@@ -1226,13 +1259,14 @@
       const cmdDef = COMMANDS.find(c => c.name === cmdName);
       if (cmdDef) {
         msgInput.value = '';
+        refreshComposer();
         cmdDef.action();
         return;
       }
     }
 
     msgInput.value = '';
-    updateComposerHighlights();
+    refreshComposer();
     try {
       const res = await fetch(sessionApi('/send'), {
         method: 'POST',
@@ -2282,18 +2316,13 @@
       return;
     }
     const it = acState.items[acState.selectedIdx];
-    const val = msgInput.value;
-    const before = val.slice(0, acState.triggerStart);
     const triggerLen = acState.triggerChar === '@@' ? 2 : 1;
     const afterStart = acState.triggerStart + triggerLen + acState.query.length;
-    const after = val.slice(afterStart);
     const inserted = acState.triggerChar === '@@' ? it.insert + ' ' : acState.triggerChar + it.insert + ' ';
-    msgInput.value = before + inserted + after;
-    const caret = (before + inserted).length;
-    msgInput.setSelectionRange(caret, caret);
+    replaceComposerRange(acState.triggerStart, afterStart, inserted);
     closeAC();
     msgInput.focus();
-    updateComposerHighlights();
+    refreshComposer();
   }
 
   function updateACFromInput() {
@@ -2345,7 +2374,7 @@
 
   msgInput.addEventListener('input', () => {
     updateACFromInput();
-    updateComposerHighlights();
+    refreshComposer();
   });
   msgInput.addEventListener('click', () => {
     updateACFromInput();
@@ -2398,6 +2427,9 @@
         closeAC();
         return;
       }
+    }
+    if (e.key === 'Enter') {
+      requestAnimationFrame(refreshComposer);
     }
     if (e.ctrlKey && e.key === 'Enter') {
       e.preventDefault();
@@ -2478,10 +2510,10 @@
       const info = latestAgents[btn.dataset.agent] || {};
       const mention = '@' + (info.alias || btn.dataset.agent);
       const text = msgInput.value.trim();
-      msgInput.value = text ? `${mention} ${text}` : `${mention} `;
+      replaceComposerRange(0, msgInput.value.length, text ? `${mention} ${text}` : `${mention} `);
       msgInput.focus();
       msgInput.setSelectionRange(msgInput.value.length, msgInput.value.length);
-      updateComposerHighlights();
+      refreshComposer();
     });
   });
 
@@ -2505,6 +2537,7 @@
   });
 
   async function init() {
+    refreshComposer();
     await loadSessions();
     renderSessions();
     connectWS();
