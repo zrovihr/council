@@ -186,6 +186,20 @@ def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
     return None
 
 
+def _turn_header(event: dict) -> str:
+    author = event.get("author") or "system"
+    display_ts = event.get("display_ts") or ""
+    return f"## [@{author}] {display_ts}"
+
+
+def _active_dispatches_for_header(session: Session, header: str) -> list[dict]:
+    return [
+        item.copy()
+        for item in session.active_dispatches_snapshot()
+        if item.get("header") == header
+    ]
+
+
 def _last_agent_speaker(session: Session) -> str | None:
     if not session.events_path.exists():
         return None
@@ -640,6 +654,18 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         target_idx = _find_turn_line(body, turns)
         if target_idx is None:
             return JSONResponse({"error": "turn not found"}, status_code=404)
+        event = json.loads(lines[target_idx])
+        header = _turn_header(event)
+        active = _active_dispatches_for_header(session, header)
+        if active:
+            return JSONResponse(
+                {
+                    "error": "cannot erase a turn while its agent dispatch is running",
+                    "active_dispatches": active,
+                },
+                status_code=409,
+            )
+        removed_dispatches = await session.remove_queued_dispatches_for_header(header)
         old_chat = session.chat_path.read_text(encoding="utf-8", errors="replace")
         del lines[target_idx]
         session.events_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -652,8 +678,14 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         if old_chat == new_chat:
             return JSONResponse({"error": "nothing changed — turn may already be archived"}, status_code=409)
         await session.add_trace("system", f"turn {turn_index} erased")
+        if removed_dispatches:
+            await session.add_trace(
+                "system",
+                "queued dispatches cancelled",
+                f"Removed {len(removed_dispatches)} queued dispatch(es) for erased turn.",
+            )
         await session.notify_chat_update()
-        return {"ok": True}
+        return {"ok": True, "cancelled_dispatches": len(removed_dispatches)}
 
     @app.post("/api/sessions/{session_id}/edit_turn")
     async def post_edit_turn(session_id: str, body: dict):

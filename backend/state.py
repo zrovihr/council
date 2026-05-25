@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .chat_markdown import iter_turn_header_matches
+
 logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek", "hermes")
@@ -347,16 +349,46 @@ def _compaction_prefix_from_chat(chat_path: Path) -> str:
     if not chat_path.exists():
         return ""
     text = chat_path.read_text(encoding="utf-8", errors="replace")
-    header_re = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$", re.MULTILINE)
-    matches = list(header_re.finditer(text))
+    matches = list(iter_turn_header_matches(text))
     if not matches:
         return ""
-    first = matches[0]
+    _first_offset, first = matches[0]
     if first.group(1) != "system" or not first.group(2).startswith("compacted "):
         return ""
     if len(matches) == 1:
-        return text.rstrip() + "\n\n"
-    return text[:matches[1].start()].rstrip() + "\n\n"
+        prefix = text.rstrip() + "\n\n"
+    else:
+        prefix = text[:matches[1][0]].rstrip() + "\n\n"
+    if _has_embedded_turn_header(prefix):
+        return ""
+    return prefix
+
+
+def _has_embedded_turn_header(text: str) -> bool:
+    fence_marker = ""
+    fence_len = 0
+    seen_first = False
+    for line in text.splitlines():
+        fence = re.match(r"^\s*(```+|~~~+)", line)
+        if fence:
+            marker_text = fence.group(1)
+            marker = marker_text[0]
+            marker_len = len(marker_text)
+            if fence_marker == marker and marker_len >= fence_len:
+                fence_marker = ""
+                fence_len = 0
+            elif not fence_marker:
+                fence_marker = marker
+                fence_len = marker_len
+            continue
+        if fence_marker:
+            continue
+        if not TURN_HEADER_LINE_RE.match(line):
+            continue
+        if seen_first:
+            return True
+        seen_first = True
+    return False
 
 
 def _load_compaction_summaries(compactions_path: Path | None) -> dict[str, dict]:
@@ -488,6 +520,7 @@ def load_trace_from_events(events_path: Path, limit: int = 100) -> list[dict]:
             "agent": event.get("agent") or "system",
             "message": clean_trace_text(event.get("message") or ""),
             "detail": clean_trace_text(event.get("detail") or ""),
+            "count": int(event.get("count") or 1),
         })
     return trace_events[-limit:]
 
@@ -888,6 +921,19 @@ class Session:
             await self.broadcast_status()
         return promoted
 
+    async def remove_queued_dispatches_for_header(self, header: str) -> list[dict]:
+        removed: list[dict] = []
+        kept: list[dict] = []
+        for item in self.dispatch_queue:
+            if item.get("header") == header:
+                removed.append(item)
+            else:
+                kept.append(item)
+        if removed:
+            self.dispatch_queue = kept
+            await self.broadcast_status()
+        return [item.copy() for item in removed]
+
     async def set_current_dispatch(self, request: dict | None) -> None:
         self.current_dispatch = request.copy() if request else None
         await self.broadcast_status()
@@ -1038,16 +1084,60 @@ class Session:
             "agent": agent,
             "message": clean_trace_text(message),
             "detail": clean_trace_text(detail),
+            "count": 1,
         }
-        self.trace_events.append(event)
+        last = self.trace_events[-1] if self.trace_events else None
+        if (
+            last
+            and last.get("agent") == event["agent"]
+            and last.get("message") == event["message"]
+            and last.get("detail") == event["detail"]
+        ):
+            event["count"] = int(last.get("count") or 1) + 1
+            last.update(event)
+        else:
+            self.trace_events.append(event)
         self.trace_events = self.trace_events[-100:]
-        self.append_event({
+        trace_event = {
             "kind": "trace",
             "agent": agent,
             "message": event["message"],
             "detail": event["detail"],
-        })
+            "count": event["count"],
+        }
+        if not self._coalesce_last_trace_event(trace_event):
+            self.append_event(trace_event)
         await self.broadcast({"type": "trace_update", "session_id": self.id, "event": event})
+
+    def _coalesce_last_trace_event(self, event: dict) -> bool:
+        if not self.events_path.exists():
+            return False
+        lines = self.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for i in range(len(lines) - 1, -1, -1):
+            if not lines[i].strip():
+                continue
+            try:
+                previous = json.loads(lines[i])
+            except json.JSONDecodeError:
+                return False
+            if previous.get("kind") != "trace":
+                return False
+            if (
+                previous.get("agent") != event.get("agent")
+                or clean_trace_text(previous.get("message") or "") != event.get("message")
+                or clean_trace_text(previous.get("detail") or "") != event.get("detail")
+            ):
+                return False
+            previous["ts"] = utc_now()
+            previous["count"] = int(previous.get("count") or 1) + 1
+            lines[i] = json.dumps(previous, ensure_ascii=True)
+            self.events_path.write_text(
+                "\n".join(lines) + ("\n" if lines else ""),
+                encoding="utf-8",
+            )
+            event["count"] = previous["count"]
+            return True
+        return False
 
     async def update_config(self, changes: dict) -> None:
         for section in STATE_SECTIONS:

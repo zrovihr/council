@@ -6,6 +6,7 @@ from pathlib import Path
 from .agent_memory import read_agent_memory
 from .mentions import AGENTS
 from .project import read_project_rules
+from .chat_markdown import iter_turn_header_matches
 
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
 PROMPT_ALIAS_CANONICALS = AGENTS + ("you",)
@@ -311,9 +312,9 @@ def _read_chat_tail(chat_md_path: Path, max_chars: int = 25000, min_turns: int =
         chat_part = full
     else:
         snippet = full[-tail_limit:]
-        headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", snippet))
+        headers = list(iter_turn_header_matches(snippet))
         if headers:
-            snippet = snippet[headers[0].start():]
+            snippet = snippet[headers[0][0]:]
         chat_part = snippet
 
     chat_part = _ensure_recent_turns(full, chat_part, min_turns)
@@ -455,9 +456,9 @@ def _trim_chat_tail_from_start(text: str, max_chars: int, min_turns: int = 6) ->
         return omitted_marker + protected_tail.strip()
 
     snippet = body[-max_chars:]
-    headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", snippet))
+    headers = list(iter_turn_header_matches(snippet))
     if headers:
-        snippet = snippet[headers[0].start():]
+        snippet = snippet[headers[0][0]:]
     else:
         snippet = _trim_from_start(body, max_chars)
 
@@ -468,11 +469,11 @@ def _trim_chat_tail_from_start(text: str, max_chars: int, min_turns: int = 6) ->
 def _last_turns(text: str, min_turns: int) -> str:
     if min_turns <= 0:
         return ""
-    headers = list(re.finditer(r"(?m)^##\s+\[@[\w-]+\]\s+.+$", text))
+    headers = list(iter_turn_header_matches(text))
     if not headers:
         return ""
     start_idx = max(0, len(headers) - min_turns)
-    return text[headers[start_idx].start():].strip()
+    return text[headers[start_idx][0]:].strip()
 
 
 def _ensure_recent_turns(full_text: str, candidate: str, min_turns: int) -> str:
@@ -522,12 +523,11 @@ def _compaction_prefix_from_chat(chat_md_path: Path) -> str:
     if not chat_md_path.exists():
         return ""
     text = chat_md_path.read_text(encoding="utf-8", errors="replace")
-    header_re = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$", re.MULTILINE)
-    matches = list(header_re.finditer(text))
+    matches = list(iter_turn_header_matches(text))
     if not matches:
         return ""
-    first = matches[0]
+    _first_offset, first = matches[0]
     if first.group(1) != "system" or not first.group(2).startswith("compacted "):
         return ""
-    end = matches[1].start() if len(matches) > 1 else len(text)
+    end = matches[1][0] if len(matches) > 1 else len(text)
     return text[:end].strip()

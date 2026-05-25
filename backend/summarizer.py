@@ -15,7 +15,8 @@ from .dispatcher import (
     _strip_opencode_header,
 )
 from .mentions import find_tail_mention
-from .state import AGENTS, Session
+from .state import AGENTS, Session, render_turn
+from .chat_markdown import TURN_HEADER_LINE_RE, iter_turn_header_matches
 
 logger = logging.getLogger(__name__)
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -25,7 +26,6 @@ OPENCODE_DONE_RE = re.compile(
 OPENCODE_ECHO_RE = re.compile(
     r"^(?:Read the attached (?:prompt file|transcript)|Read @\w+'s private memory) and.*\.$"
 )
-TURN_HEADER_RE = re.compile(r"(?m)^## \[@([^\]]+)\] [^\n]*\n")
 DEFAULT_VERBATIM_TAIL_TURNS = 6
 DEFAULT_VERBATIM_TAIL_CHARS = 12000
 
@@ -68,7 +68,12 @@ async def compact_chat(session: Session, config: dict) -> None:
         if current_text.startswith(full_text):
             post_compaction_turns = current_text[len(full_text):].strip()
         elif current_text != full_text:
-            post_compaction_turns = current_text.strip()
+            current_event_lines = (
+                session.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                if session.events_path.exists()
+                else []
+            )
+            post_compaction_turns = _render_turn_events(current_event_lines[event_insert_idx:]).strip()
 
     archive_note = f"Compacted previous chat. Archive: `chat-archive/{archive_name}`"
     new_content = (
@@ -237,7 +242,33 @@ def _clean_summary(summary: str) -> str:
         and not OPENCODE_DONE_RE.match(line.strip())
         and not OPENCODE_ECHO_RE.match(line.strip())
     ]
-    return "\n".join(lines).strip() or "No summary returned."
+    return _escape_turn_headers("\n".join(lines).strip()) or "No summary returned."
+
+
+def _escape_turn_headers(text: str) -> str:
+    return "\n".join(
+        f"\\{line}" if TURN_HEADER_LINE_RE.match(line) else line
+        for line in text.splitlines()
+    )
+
+
+def _render_turn_events(event_lines: list[str]) -> str:
+    parts: list[str] = []
+    for line in event_lines:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") not in ("user_turn", "agent_turn", "system_turn"):
+            continue
+        parts.append(render_turn(
+            str(event.get("author") or "system"),
+            str(event.get("text") or ""),
+            str(event.get("display_ts") or "") or None,
+        ))
+    return "".join(parts)
 
 
 def _append_recent_verbatim_turns(summary: str, full_text: str, config: dict) -> str:
@@ -259,29 +290,38 @@ def _append_recent_verbatim_turns(summary: str, full_text: str, config: dict) ->
         cleaned_summary,
         flags=re.DOTALL,
     )
+    fence = _verbatim_fence(recent)
     return (
         f"{cleaned_summary}\n\n"
         "## Recent verbatim turns\n"
         "These are the latest non-system turns preserved exactly so the next agent "
         "can continue without losing wording or context.\n\n"
-        "```text\n"
+        f"{fence}text\n"
         f"{recent}\n"
-        "```"
+        f"{fence}"
     )
+
+
+def _verbatim_fence(text: str) -> str:
+    """Return a backtick fence longer than any backtick fence inside text."""
+    longest = 2
+    for match in re.finditer(r"(?m)^\s*(`{3,})", text or ""):
+        longest = max(longest, len(match.group(1)))
+    return "`" * (longest + 1)
 
 
 def _recent_verbatim_turns(full_text: str, max_turns: int, max_chars: int) -> str:
     if max_turns <= 0 or max_chars <= 0:
         return ""
 
-    matches = list(TURN_HEADER_RE.finditer(full_text))
+    matches = list(iter_turn_header_matches(full_text))
     turns = []
-    for idx, match in enumerate(matches):
+    for idx, (start, match) in enumerate(matches):
         speaker = match.group(1).strip().lower()
         if speaker == "system":
             continue
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(full_text)
-        turn = full_text[match.start():end].rstrip()
+        end = matches[idx + 1][0] if idx + 1 < len(matches) else len(full_text)
+        turn = full_text[start:end].rstrip()
         if turn:
             turns.append(turn)
 

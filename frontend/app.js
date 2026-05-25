@@ -203,11 +203,31 @@
 
   function parseChatMD(text) {
     const turns = [];
-    const TURN_HEADER_RE = /^##\s+\[@(\w+)\]\s+(.+)$/;
-    const ESCAPED_TURN_HEADER_RE = /^\\(##\s+\[@\w+\]\s+.+)$/;
+    const TURN_HEADER_RE = /^##\s+\[@([\w-]+)\]\s+(.+)$/;
+    const ESCAPED_TURN_HEADER_RE = /^\\(##\s+\[@[\w-]+\]\s+.+)$/;
     const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     let current = null;
     let preamble = '';
+    let fenceMarker = '';
+    let fenceLen = 0;
+    let inCompactionBody = false;
+    let compactionPendingMarkerSeen = false;
+    let skippingDuplicatedChat = false;
+    let compactionCutoff = '';
+
+    function compactStamp(value) {
+      const m = /^compacted\s+(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})/i.exec(value || '');
+      return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}` : '';
+    }
+
+    function turnStamp(value) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/.exec(value || '');
+      return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}` : '';
+    }
+
+    function isPendingMarker(line) {
+      return /^(?:No pending mentions\.|Pending mention:\s+@\w+)\s*$/.test(line);
+    }
 
     function preambleTurn(body) {
       const trimmed = body.trim();
@@ -240,16 +260,62 @@
     }
 
     for (const line of lines) {
-      const m = TURN_HEADER_RE.exec(line);
+      const fence = /^\s*(```+|~~~+)/.exec(line);
+      const m = fenceMarker ? null : TURN_HEADER_RE.exec(line);
       if (m) {
+        if (skippingDuplicatedChat) {
+          const ts = turnStamp(m[2]);
+          if (ts && compactionCutoff && ts <= compactionCutoff) {
+            continue;
+          }
+          skippingDuplicatedChat = false;
+          inCompactionBody = false;
+          compactionPendingMarkerSeen = false;
+        }
+        if (inCompactionBody) {
+          if (compactionPendingMarkerSeen) {
+            if (m[1] === 'system' && m[2].startsWith('compacted ')) {
+              skippingDuplicatedChat = true;
+              continue;
+            }
+            inCompactionBody = false;
+            compactionPendingMarkerSeen = false;
+          } else {
+            if (m[1] === 'system' && m[2].startsWith('compacted ')) {
+              appendBody(line);
+              continue;
+            }
+            inCompactionBody = false;
+          }
+        }
         if (!current && turns.length === 0 && preamble.trim()) {
           turns.push(preambleTurn(preamble));
           preamble = '';
         }
         finishCurrent();
         current = { author: m[1], time: m[2], body: '' };
+        if (m[1] === 'system' && m[2].startsWith('compacted ')) {
+          inCompactionBody = true;
+          compactionPendingMarkerSeen = false;
+          skippingDuplicatedChat = false;
+          compactionCutoff = compactStamp(m[2]);
+        }
       } else {
         appendBody(line);
+        if (inCompactionBody && !fenceMarker && isPendingMarker(line)) {
+          compactionPendingMarkerSeen = true;
+        }
+        if (fence) {
+          const markerText = fence[1];
+          const marker = markerText[0];
+          if (fenceMarker === marker && markerText.length >= fenceLen) {
+            fenceMarker = '';
+            fenceLen = 0;
+          } else if (!fenceMarker) {
+            fenceMarker = marker;
+            fenceLen = markerText.length;
+          }
+        }
       }
     }
     finishCurrent();
@@ -1808,7 +1874,8 @@
 
     const message = document.createElement('div');
     message.className = 'trace-message';
-    message.textContent = cleanTraceText(event.message);
+    const count = Number(event.count || 1);
+    message.textContent = `${cleanTraceText(event.message)}${count > 1 ? ` x${count}` : ''}`;
 
     item.appendChild(meta);
     item.appendChild(message);
@@ -1852,9 +1919,19 @@
           loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
         } else if (msg.type === 'trace_update') {
           const traceEvent = msg.event || {};
-          latestTraceEvents.push(traceEvent);
+          const last = latestTraceEvents[latestTraceEvents.length - 1];
+          if (
+            last
+            && last.agent === traceEvent.agent
+            && last.message === traceEvent.message
+            && last.detail === traceEvent.detail
+          ) {
+            latestTraceEvents[latestTraceEvents.length - 1] = traceEvent;
+          } else {
+            latestTraceEvents.push(traceEvent);
+          }
           latestTraceEvents = latestTraceEvents.slice(-100);
-          appendTraceEvent(traceEvent);
+          renderTrace(latestTraceEvents);
         } else if (msg.type === 'error') {
           console.error('Server error:', msg.msg);
         }

@@ -23,10 +23,11 @@ from .dispatcher import (dispatch_claude, dispatch_codex, dispatch_deepseek,
                             DispatchResult, estimate_tokens)
 from .summarizer import compact_chat
 from .mentions import find_agent_mentions, neutralize_agent_mentions
+from .chat_markdown import TURN_HEADER_LINE_RE, iter_turn_header_matches
 
 logger = logging.getLogger(__name__)
 
-TURN_HEADER_RE = re.compile(r"^##\s+\[@(\w+)\]\s+(.+)$")
+TURN_HEADER_RE = TURN_HEADER_LINE_RE
 
 
 def _get_provider(config: dict, agent: str) -> str:
@@ -141,8 +142,14 @@ def _parse_turns(text: str) -> list[dict]:
         turns.append(current)
         current = None
 
-    for line in text.splitlines():
-        m = TURN_HEADER_RE.match(line)
+    header_offsets = {
+        offset: match
+        for offset, match in iter_turn_header_matches(text)
+    }
+    offset = 0
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        m = header_offsets.get(offset)
         if m:
             finish_current()
             current = {"author": m.group(1), "header": line.strip(), "body": ""}
@@ -150,6 +157,7 @@ def _parse_turns(text: str) -> list[dict]:
             if current["body"]:
                 current["body"] += "\n"
             current["body"] += line
+        offset += len(raw_line)
     finish_current()
     return turns
 
@@ -172,6 +180,13 @@ def _find_header_index(turns: list[dict], header: str) -> int | None:
 
 def _mention_key(header: str, agent: str) -> str:
     return f"{header}\t{agent}"
+
+
+def _split_mention_key(key: str) -> tuple[str, str]:
+    header, sep, agent = key.rpartition("\t")
+    if not sep:
+        return "", key
+    return header, agent
 
 
 def _request_id(header: str, agent: str) -> str:
@@ -280,6 +295,22 @@ def _prune_unresolved_user_mentions(
                 dispatched_mentions.remove(key)
                 changed = True
     return changed
+
+
+def _prune_missing_live_mentions(
+    turns: list[dict],
+    dispatched_mentions: set[str],
+) -> bool:
+    live_headers = {turn["header"] for turn in turns}
+    stale = {
+        key
+        for key in dispatched_mentions
+        if _split_mention_key(key)[0] not in live_headers
+    }
+    if not stale:
+        return False
+    dispatched_mentions.difference_update(stale)
+    return True
 
 
 def _initial_processed_header(
@@ -530,6 +561,8 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     turns = _parse_turns(text)
                     dispatch_modes = _load_turn_dispatch_modes(session.events_path)
                     aliases = session.effective_config().get("aliases", {})
+                    if _prune_missing_live_mentions(turns, dispatched_mentions):
+                        _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
 
                     start_idx = 0
                     if last_processed_header:
