@@ -226,7 +226,7 @@
       }
     }
     if (!restored) {
-      chatArea.scrollTop = Math.max(0, chatArea.scrollHeight - state.distanceFromBottom - chatArea.clientHeight);
+      chatArea.scrollTop = Math.max(0, state.scrollTop);
     }
     newMsgsBtn.classList.remove('hidden');
   }
