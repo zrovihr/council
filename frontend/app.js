@@ -644,6 +644,20 @@
         openTurnMenu = null;
       });
       moreMenu.appendChild(copyMetadataBtn);
+      const copyChatBtn = document.createElement('button');
+      copyChatBtn.type = 'button';
+      copyChatBtn.textContent = 'Copy chat';
+      copyChatBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await copyText(turn.body.trim());
+        copyChatBtn.textContent = 'Copied';
+        setTimeout(() => {
+          copyChatBtn.textContent = 'Copy chat';
+        }, 1200);
+        moreMenu.classList.add('hidden');
+        openTurnMenu = null;
+      });
+      moreMenu.appendChild(copyChatBtn);
       const resetBtn = document.createElement('button');
       resetBtn.type = 'button';
       resetBtn.textContent = 'Reset discussion to here';
@@ -3056,15 +3070,32 @@
     triggerStart: -1,
     triggerChar: '',
     query: '',
+    requestId: 0,
+    dismissed: null,
   };
 
-  function closeAC() {
+  function activeACSignature() {
+    if (acState.triggerStart < 0 || !acState.triggerChar) return null;
+    return {
+      triggerStart: acState.triggerStart,
+      triggerChar: acState.triggerChar,
+    };
+  }
+
+  function sameACSignature(a, b) {
+    return Boolean(a && b && a.triggerStart === b.triggerStart && a.triggerChar === b.triggerChar);
+  }
+
+  function closeAC({ dismiss = false } = {}) {
+    const signature = activeACSignature();
+    acState.requestId += 1;
     acState.open = false;
     acState.items = [];
     acState.selectedIdx = 0;
     acState.triggerStart = -1;
     acState.triggerChar = '';
     acState.query = '';
+    acState.dismissed = dismiss ? signature : acState.dismissed;
     acBox.classList.add('hidden');
     acBox.innerHTML = '';
   }
@@ -3153,15 +3184,34 @@
 
   async function refreshAC() {
     if (!acState.open) return;
+    const requestId = ++acState.requestId;
+    const triggerStart = acState.triggerStart;
+    const triggerChar = acState.triggerChar;
+    const query = acState.query;
+    let items = [];
     if (acState.triggerChar === '/') {
-      acState.items = buildCommandItems(acState.query);
+      items = buildCommandItems(query);
     } else if (acState.triggerChar === '@@') {
       const item = quickReplyItem();
-      acState.items = item ? [item] : [];
+      items = item ? [item] : [];
     } else {
-      const data = await fetchCompletions(acState.query);
-      acState.items = buildItems(data);
+      const data = await fetchCompletions(query);
+      items = buildItems(data);
     }
+    if (
+      requestId !== acState.requestId ||
+      !acState.open ||
+      triggerStart !== acState.triggerStart ||
+      triggerChar !== acState.triggerChar ||
+      query !== acState.query
+    ) {
+      return;
+    }
+    if (triggerChar === '@' && query && items.length === 0) {
+      closeAC({ dismiss: true });
+      return;
+    }
+    acState.items = items;
     if (acState.selectedIdx >= acState.items.length) {
       acState.selectedIdx = 0;
     }
@@ -3186,21 +3236,17 @@
     refreshComposer();
   }
 
-  function updateACFromInput() {
+  function findActiveACTrigger() {
     const val = msgInput.value;
     const caret = msgInput.selectionStart;
+    if (msgInput.selectionStart !== msgInput.selectionEnd) return null;
     const quickStart = caret - 2;
     if (
       quickStart >= 0 &&
       val.slice(quickStart, caret) === '@@' &&
       (quickStart === 0 || /\s/.test(val[quickStart - 1]))
     ) {
-      acState.open = true;
-      acState.triggerStart = quickStart;
-      acState.triggerChar = '@@';
-      acState.query = '';
-      refreshAC();
-      return;
+      return { triggerStart: quickStart, triggerChar: '@@', query: '' };
     }
     let i = caret - 1;
     let trigger = -1;
@@ -3218,18 +3264,32 @@
       i--;
     }
     if (trigger === -1) {
-      if (acState.open) closeAC();
-      return;
+      return null;
     }
     const query = val.slice(trigger + 1, caret);
     if (/\s/.test(query)) {
+      return null;
+    }
+    return { triggerStart: trigger, triggerChar: triggerCh, query };
+  }
+
+  function updateACFromInput() {
+    const active = findActiveACTrigger();
+    if (!active) {
+      if (acState.open) closeAC();
+      acState.dismissed = null;
+      return;
+    }
+    const signature = { triggerStart: active.triggerStart, triggerChar: active.triggerChar };
+    if (sameACSignature(acState.dismissed, signature)) {
       if (acState.open) closeAC();
       return;
     }
     acState.open = true;
-    acState.triggerStart = trigger;
-    acState.triggerChar = triggerCh;
-    acState.query = query;
+    acState.triggerStart = active.triggerStart;
+    acState.triggerChar = active.triggerChar;
+    acState.query = active.query;
+    acState.dismissed = null;
     refreshAC();
   }
 
@@ -3296,7 +3356,7 @@
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        closeAC();
+        closeAC({ dismiss: true });
         return;
       }
     }
