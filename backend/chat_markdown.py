@@ -35,6 +35,12 @@ def _sortable_turn_stamp(text: str) -> str:
     return f"{match.group(1)}-{match.group(2)}-{match.group(3)} {match.group(4)}:{match.group(5)}:{match.group(6)}"
 
 
+def _single_line_fence(line: str, marker_text: str) -> bool:
+    """Return True for inline-ish ``` text ``` lines that should not hide turns."""
+    rest = line[line.find(marker_text) + len(marker_text):]
+    return marker_text in rest
+
+
 def iter_turn_header_matches(text: str) -> Iterator[tuple[int, re.Match[str]]]:
     """Yield live Council turn headers, ignoring headers embedded in summaries."""
     fence_marker = ""
@@ -48,15 +54,18 @@ def iter_turn_header_matches(text: str) -> Iterator[tuple[int, re.Match[str]]]:
         fence = FENCE_LINE_RE.match(line)
         if fence:
             marker_text = fence.group(1)
-            marker = marker_text[0]
-            marker_len = len(marker_text)
-            if fence_marker == marker and marker_len >= fence_len:
-                fence_marker = ""
-                fence_len = 0
-            elif not fence_marker:
-                fence_marker = marker
-                fence_len = marker_len
-            continue
+            if _single_line_fence(line, marker_text):
+                pass
+            else:
+                marker = marker_text[0]
+                marker_len = len(marker_text)
+                if fence_marker == marker and marker_len >= fence_len:
+                    fence_marker = ""
+                    fence_len = 0
+                elif not fence_marker:
+                    fence_marker = marker
+                    fence_len = marker_len
+                continue
         if fence_marker:
             continue
         match = TURN_HEADER_LINE_RE.match(line)

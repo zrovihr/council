@@ -4,6 +4,7 @@
   const chatInner = document.getElementById('chat-inner');
   const chatArea = document.getElementById('chat-area');
   const traceList = document.getElementById('trace-list');
+  const globalLogList = document.getElementById('global-log-list');
   const msgInput = document.getElementById('msg-input');
   const msgHighlights = document.getElementById('msg-highlights');
   const sendNowBtn = document.getElementById('send-now-btn');
@@ -20,10 +21,12 @@
   const confirmNoBtn = document.getElementById('confirm-no-btn');
   const statusIndicator = document.getElementById('status-indicator');
   const compactStatusEl = document.getElementById('compact-status');
+  const resetTokenStatsBtn = document.getElementById('reset-token-stats-btn');
   const queueBtn = document.getElementById('queue-btn');
   const queueMenu = document.getElementById('queue-menu');
   const projectNameEl = document.getElementById('project-name');
   const agentModelsEl = document.getElementById('agent-models');
+  const promptPreviewEl = document.getElementById('prompt-preview');
   const mobileMenuBtn = document.getElementById('mobile-menu-btn');
   const mobileDrawerBackdrop = document.getElementById('mobile-drawer-backdrop');
   const configToggleBtn = document.getElementById('config-toggle-btn');
@@ -58,6 +61,7 @@
   let latestAgentsMd = null;
   let agentsDocPanelOpen = false;
   let latestTraceEvents = [];
+  let latestGlobalLogEvents = [];
   let latestTurns = [];
   let latestTokenData = null;
   let chatFetchFrame = null;
@@ -65,9 +69,15 @@
   let sessions = [];
   let activeSessionId = null;
   const sessionScrollStates = new Map();
+  const SCROLL_STORAGE_KEY = 'council.sessionScrollStates.v1';
   let editState = null;
   let openTurnMenu = null;
   let renamingSessionId = null;
+  let composerStickToBottom = false;
+  let previewTimer = null;
+  let lastPreviewDraft = '';
+  let lastPreviewAgents = null;
+  let lastSentPreviewAgents = null;
   const AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
   const COLOR_IDS = ['you', ...AGENT_IDS];
   const DEFAULT_COLORS = {
@@ -112,6 +122,25 @@
 
   function activeSession() {
     return sessions.find((s) => s.id === activeSessionId) || null;
+  }
+
+  function loadStoredScrollStates() {
+    try {
+      const raw = localStorage.getItem(SCROLL_STORAGE_KEY);
+      const data = raw ? JSON.parse(raw) : {};
+      Object.entries(data || {}).forEach(([key, value]) => {
+        if (value && typeof value === 'object') sessionScrollStates.set(key, value);
+      });
+    } catch (_) {}
+  }
+
+  function persistScrollStates() {
+    try {
+      localStorage.setItem(
+        SCROLL_STORAGE_KEY,
+        JSON.stringify(Object.fromEntries(sessionScrollStates.entries()))
+      );
+    } catch (_) {}
   }
 
   chatArea.addEventListener('scroll', () => {
@@ -168,6 +197,7 @@
   function saveActiveScrollState(force = false) {
     if (!activeSessionId || (isRenderingChat && !force)) return;
     sessionScrollStates.set(activeSessionId, readChatScrollState());
+    persistScrollStates();
   }
 
   function escapeCssValue(value) {
@@ -201,6 +231,28 @@
     newMsgsBtn.classList.remove('hidden');
   }
 
+  function scrollStateForRender(sessionId) {
+    if (sessionId && sessionId === activeSessionId && chatInner.children.length) {
+      return readChatScrollState();
+    }
+    return sessionScrollStates.get(sessionId);
+  }
+
+  function markActiveScrollAtBottom() {
+    if (!activeSessionId) return;
+    userScrolledUp = false;
+    newMsgsBtn.classList.add('hidden');
+    sessionScrollStates.set(activeSessionId, {
+      scrollTop: chatArea.scrollHeight,
+      scrollHeight: chatArea.scrollHeight,
+      distanceFromBottom: 0,
+      atBottom: true,
+      anchorKey: null,
+      anchorOffset: 0,
+    });
+    persistScrollStates();
+  }
+
   function parseChatMD(text) {
     const turns = [];
     const TURN_HEADER_RE = /^##\s+\[@([\w-]+)\]\s+(.+)$/;
@@ -227,6 +279,10 @@
 
     function isPendingMarker(line) {
       return /^(?:No pending mentions\.|Pending mention:\s+@\w+)\s*$/.test(line);
+    }
+
+    function isSingleLineFence(line, markerText) {
+      return line.slice(line.indexOf(markerText) + markerText.length).includes(markerText);
     }
 
     function preambleTurn(body) {
@@ -305,7 +361,7 @@
         if (inCompactionBody && !fenceMarker && isPendingMarker(line)) {
           compactionPendingMarkerSeen = true;
         }
-        if (fence) {
+        if (fence && !isSingleLineFence(line, fence[1])) {
           const markerText = fence[1];
           const marker = markerText[0];
           if (fenceMarker === marker && markerText.length >= fenceLen) {
@@ -488,6 +544,7 @@
       }
       const explicitStatus = td && td.metadata && td.metadata.dispatch_status;
       const shownStatus = explicitStatus && explicitStatus !== 'completed' ? explicitStatus : inferredStatus;
+      if (shownStatus === 'running') card.classList.add('running');
       if (shownStatus) {
         const statusBadge = document.createElement('span');
         statusBadge.className = `turn-status-badge ${shownStatus}`;
@@ -565,6 +622,16 @@
         openTurnMenu = null;
       });
       moreMenu.appendChild(copyMetadataBtn);
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.textContent = 'Reset discussion to here';
+      resetBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        moreMenu.classList.add('hidden');
+        openTurnMenu = null;
+        await resetDiscussionToTurn(turn, turnIdx);
+      });
+      moreMenu.appendChild(resetBtn);
       moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (openTurnMenu && openTurnMenu !== moreMenu) {
@@ -985,17 +1052,32 @@
   }
 
   function syncComposerHeight() {
+    const shouldStick = composerStickToBottom || msgInput.selectionEnd >= msgInput.value.length;
     msgInput.style.height = 'auto';
     const nextHeight = Math.min(Math.max(msgInput.scrollHeight, 64), 220);
     msgInput.style.height = nextHeight + 'px';
     msgHighlights.style.height = nextHeight + 'px';
+    if (shouldStick) {
+      msgInput.scrollTop = msgInput.scrollHeight;
+    }
     msgHighlights.scrollTop = msgInput.scrollTop;
     msgHighlights.scrollLeft = msgInput.scrollLeft;
+    composerStickToBottom = false;
   }
 
   function refreshComposer() {
     syncComposerHeight();
     updateComposerHighlights();
+  }
+
+  function ensureComposerBottomVisible() {
+    requestAnimationFrame(() => {
+      if (composerStickToBottom || msgInput.selectionEnd >= msgInput.value.length) {
+        msgInput.scrollTop = msgInput.scrollHeight;
+        msgHighlights.scrollTop = msgInput.scrollTop;
+        composerStickToBottom = false;
+      }
+    });
   }
 
   function replaceComposerRange(start, end, text) {
@@ -1345,7 +1427,8 @@
     latestTurns = [];
     latestTokenData = null;
     chatInner.innerHTML = '';
-    userScrolledUp = Boolean(sessionScrollStates.get(sessionId) && !sessionScrollStates.get(sessionId).atBottom);
+    const savedState = sessionScrollStates.get(sessionId);
+    userScrolledUp = Boolean(savedState && !savedState.atBottom);
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1369,6 +1452,7 @@
     latestTurns = [];
     latestTokenData = null;
     chatInner.innerHTML = '';
+    markActiveScrollAtBottom();
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1391,6 +1475,7 @@
     latestTurns = [];
     latestTokenData = null;
     chatInner.innerHTML = '';
+    markActiveScrollAtBottom();
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
@@ -1484,7 +1569,7 @@
       }
       latestTurns = turns;
       latestTokenData = tokenData;
-      renderTurns(turns, tokenData, sessionScrollStates.get(targetSessionId));
+      renderTurns(turns, tokenData, scrollStateForRender(targetSessionId));
       loadSessions().catch((e) => console.error('Failed to refresh sessions:', e));
       fetchStatus().catch((e) => console.error('Failed to refresh status:', e));
     } catch (e) {
@@ -1525,6 +1610,7 @@
 
     msgInput.value = '';
     refreshComposer();
+    markActiveScrollAtBottom();
     try {
       const res = await fetch(sessionApi('/send'), {
         method: 'POST',
@@ -1537,7 +1623,9 @@
           window.alert(err.error);
         }
         console.error('Send failed:', err.error);
+        return;
       }
+      await fetchChat();
     } catch (e) {
       console.error('Send error:', e);
     }
@@ -1592,6 +1680,173 @@
         }
       }
     );
+  }
+
+  async function resetTokenStats() {
+    if (!activeSessionId) return;
+    showConfirm(
+      'Reset token stats?',
+      'This resets the session token counters shown in the top bar. Chat history, events, and agent memory are kept. Council refuses while agents are running or queued.',
+      async () => {
+        try {
+          const res = await fetch(sessionApi('/reset_token_stats'), { method: 'POST' });
+          if (!res.ok) {
+            const err = await res.json();
+            window.alert(err.error || res.statusText || 'Reset token stats failed');
+            return;
+          }
+          await fetchStatus();
+          await fetchGlobalLog();
+        } catch (e) {
+          console.error('Reset token stats failed:', e);
+        }
+      }
+    );
+  }
+
+  async function resetAgentTokenStats(agent) {
+    if (!activeSessionId) return;
+    const name = displayAuthor(agent);
+    try {
+      const res = await fetch(sessionApi('/reset_token_stats') + '?agent=' + encodeURIComponent(agent), { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        window.alert(err.error || 'Reset token stats failed');
+        return;
+      }
+      await fetchStatus();
+      await fetchGlobalLog();
+    } catch (e) {
+      console.error('Reset agent token stats failed:', e);
+    }
+  }
+
+  function findMentionedAgents(text) {
+    const aliases = currentAgentAliases();
+    const found = [];
+    for (const id of AGENT_IDS) {
+      const alias = String(aliases[id] || '').trim().replace(/^@/, '').toLowerCase();
+      const pattern = new RegExp('(?<![\\\\\'\"\\u2018\\u2019\\u201c\\u201d])@(' + escapeRegex(id) + (alias && alias !== id ? '|' + escapeRegex(alias) : '') + ')(?!\\w)', 'gi');
+      if (pattern.test(text || '')) {
+        found.push(id);
+      }
+    }
+    return found;
+  }
+
+  function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async function fetchPromptPreview() {
+    if (!activeSessionId) return;
+    const draft = msgInput.value.trim();
+    if (!draft) {
+      if (lastPreviewAgents && lastPreviewAgents.length) {
+        if (JSON.stringify(lastPreviewAgents) === lastSentPreviewAgents) return;
+        lastSentPreviewAgents = JSON.stringify(lastPreviewAgents);
+        try {
+          const res = await fetch(sessionApi('/prompt_preview'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ draft_text: '', agents: lastPreviewAgents }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (draft !== msgInput.value.trim()) return;
+          renderPromptPreview(data);
+        } catch (_) {}
+      } else {
+        promptPreviewEl.classList.add('hidden');
+        promptPreviewEl.innerHTML = '';
+      }
+      return;
+    }
+    const agents = findMentionedAgents(draft);
+    if (!agents.length) {
+      promptPreviewEl.classList.add('hidden');
+      promptPreviewEl.innerHTML = '';
+      lastPreviewDraft = '';
+      lastPreviewAgents = null;
+      lastSentPreviewAgents = null;
+      return;
+    }
+    if (draft === lastPreviewDraft) return;
+    lastPreviewDraft = draft;
+    lastPreviewAgents = agents;
+    lastSentPreviewAgents = JSON.stringify(agents);
+    try {
+      const res = await fetch(sessionApi('/prompt_preview'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft_text: draft, agents }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (draft !== msgInput.value.trim()) return;
+      renderPromptPreview(data);
+    } catch (_) {}
+  }
+
+  function schedulePromptPreview() {
+    if (previewTimer !== null) clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      previewTimer = null;
+      fetchPromptPreview();
+    }, 250);
+  }
+
+  function renderPromptPreview(data) {
+    if (!data || !Object.keys(data).length) {
+      promptPreviewEl.classList.add('hidden');
+      return;
+    }
+    promptPreviewEl.classList.remove('hidden');
+    promptPreviewEl.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'preview-header';
+    header.textContent = 'Next prompt — token cost per agent:';
+    promptPreviewEl.appendChild(header);
+
+    for (const id of AGENT_IDS) {
+      const info = data[id];
+      if (!info) continue;
+      const row = document.createElement('div');
+      row.className = `preview-row ${id}`;
+
+      const label = document.createElement('span');
+      label.className = 'preview-agent';
+      label.textContent = '@' + displayAuthor(id);
+
+      const barWrap = document.createElement('span');
+      barWrap.className = 'preview-bar-wrap';
+      const bar = document.createElement('span');
+      bar.className = 'preview-bar';
+      const total = info.total || 0;
+      const ctxWindow = info.context_window || 200000;
+      const pct = ctxWindow ? Math.min(100, Math.round((total / ctxWindow) * 100)) : 0;
+      bar.style.width = Math.max(2, pct) + '%';
+      if (pct > 80) bar.classList.add('danger');
+      else if (pct > 50) bar.classList.add('warning');
+      barWrap.appendChild(bar);
+
+      const count = document.createElement('span');
+      count.className = 'preview-count';
+      count.textContent = formatTokenCount(total) || String(total);
+
+      const breakdown = document.createElement('span');
+      breakdown.className = 'preview-breakdown';
+      const mem = formatTokenCount(info.private_memory || 0) || '0';
+      const chat = formatTokenCount(info.chat_tail || 0) || '0';
+      const user = formatTokenCount(info.user_msg || 0) || '0';
+      breakdown.textContent = 'mem ' + mem + ' + chat ' + chat + ' + msg ' + user;
+
+      row.appendChild(label);
+      row.appendChild(barWrap);
+      row.appendChild(count);
+      row.appendChild(breakdown);
+      promptPreviewEl.appendChild(row);
+    }
   }
 
   function turnIdentity(turn, turnIdx) {
@@ -1666,6 +1921,43 @@
           await fetchChat();
         } catch (e) {
           console.error('Erase turn failed:', e);
+        }
+      }
+    );
+  }
+
+  async function resetDiscussionToTurn(turn, turnIdx) {
+    if (!activeSessionId) return;
+    if (
+      latestStatus
+      && (
+        latestStatus.busy
+        || (latestStatus.active_dispatches || []).length
+        || (latestStatus.dispatch_queue || []).length
+      )
+    ) {
+      window.alert('Cannot reset while agents are running or queued.');
+      return;
+    }
+    showConfirm(
+      'Reset discussion to here?',
+      'Archive and remove every later chat turn, queued state, and per-agent prompt memory after this point. Council refuses while an agent is running or queued.',
+      async () => {
+        try {
+          const res = await fetch(sessionApi('/reset_to_turn'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(turnIdentity(turn, turnIdx)),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            window.alert(err.error || res.statusText || 'Reset failed');
+            return;
+          }
+          markActiveScrollAtBottom();
+          await Promise.all([fetchChat(), fetchStatus(), fetchTrace()]);
+        } catch (e) {
+          console.error('Reset failed:', e);
         }
       }
     );
@@ -1844,11 +2136,46 @@
     } catch (_) {}
   }
 
+  async function fetchGlobalLog() {
+    try {
+      const res = await fetch('/api/global-log');
+      const data = await res.json();
+      latestGlobalLogEvents = data.events || [];
+      renderGlobalLog(latestGlobalLogEvents);
+    } catch (_) {}
+  }
+
   function renderTrace(events) {
     traceList.innerHTML = '';
     for (const event of events) {
       appendTraceEvent(event);
     }
+  }
+
+  function renderGlobalLog(events) {
+    if (!globalLogList) return;
+    globalLogList.innerHTML = '';
+    for (const event of events) {
+      const item = document.createElement('div');
+      item.className = 'global-log-item';
+      const meta = document.createElement('div');
+      meta.className = 'global-log-meta';
+      meta.textContent = event.time || '';
+      const message = document.createElement('div');
+      message.className = 'global-log-message';
+      const count = Number(event.count || 1);
+      message.textContent = `${cleanTraceText(event.message)}${count > 1 ? ` x${count}` : ''}`;
+      item.appendChild(meta);
+      item.appendChild(message);
+      if (event.detail) {
+        const detail = document.createElement('div');
+        detail.className = 'global-log-detail';
+        detail.textContent = cleanTraceText(event.detail);
+        item.appendChild(detail);
+      }
+      globalLogList.appendChild(item);
+    }
+    globalLogList.scrollTop = globalLogList.scrollHeight;
   }
 
   function cleanTraceText(text) {
@@ -1964,7 +2291,7 @@
     if (latestTurns.length) {
       renderTurns(latestTurns, latestTokenData);
     }
-    renderAgentModels(latestAgents);
+    renderAgentCards(latestAgents, data.token_totals);
     updateAgentButtons();
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
     updateComposerHighlights();
@@ -2088,20 +2415,50 @@
     return row;
   }
 
-  function renderAgentModels(agents) {
+  function renderAgentCards(agents, totals) {
     const order = AGENT_IDS;
     agentModelsEl.innerHTML = '';
     for (const id of order) {
       const info = agents[id];
       if (!info) continue;
-      const pill = document.createElement('span');
-      pill.className = `agent-model ${id}`;
-      pill.title = `${info.runtime || ''} - ${info.note || ''}`.trim();
-      const effort = info.effort ? ` / ${info.effort}` : '';
-      const provider = info.provider ? `${info.provider}: ` : '';
-      const key = info.api_key_saved ? ' / key' : '';
-      pill.textContent = `@${info.alias || id}: ${provider}${info.model || info.runtime || 'default'}${effort}${key}`;
-      agentModelsEl.appendChild(pill);
+      const card = document.createElement('div');
+      card.className = `agent-card ${id}`;
+
+      const title = document.createElement('div');
+      title.className = 'agent-card-title';
+      title.textContent = '@' + (info.alias || id);
+
+      const sub = document.createElement('div');
+      sub.className = 'agent-card-sub';
+      const modelName = info.model || info.runtime || 'default';
+      const effort = info.effort ? ' \u00b7 ' + info.effort : '';
+      const key = info.api_key_saved ? ' \u00b7 \uD83D\uDD11' : '';
+      sub.textContent = modelName + effort + key;
+      sub.title = `${info.provider || ''}${info.runtime ? ' - ' + info.runtime : ''}${info.note ? ' - ' + info.note : ''}`;
+
+      const tokenRow = document.createElement('div');
+      tokenRow.className = 'agent-card-tokens';
+      const tokenItem = totals && totals[id];
+      const tokenCount = tokenItem
+        ? (formatTokenCount(tokenItem.total_tokens) || '~' + (formatTokenCount(tokenItem.total_tokens_est) || '0'))
+        : '\u2014';
+      tokenRow.textContent = tokenCount + ' session';
+
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'agent-card-reset';
+      resetBtn.title = 'Reset token counter for @' + displayAuthor(id);
+      resetBtn.innerHTML = '\u27F3';
+      resetBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        resetAgentTokenStats(id);
+      });
+      tokenRow.appendChild(resetBtn);
+
+      card.appendChild(title);
+      card.appendChild(sub);
+      card.appendChild(tokenRow);
+      agentModelsEl.appendChild(card);
     }
   }
 
@@ -2743,6 +3100,8 @@
   msgInput.addEventListener('input', () => {
     updateACFromInput();
     refreshComposer();
+    ensureComposerBottomVisible();
+    schedulePromptPreview();
   });
   msgInput.addEventListener('click', () => {
     updateACFromInput();
@@ -2758,6 +3117,15 @@
     msgHighlights.scrollTop = msgInput.scrollTop;
     msgHighlights.scrollLeft = msgInput.scrollLeft;
   });
+  msgInput.addEventListener('wheel', (e) => {
+    if (msgInput.scrollHeight <= msgInput.clientHeight) return;
+    const before = msgInput.scrollTop;
+    msgInput.scrollTop += e.deltaY;
+    if (msgInput.scrollTop !== before) {
+      e.preventDefault();
+      msgHighlights.scrollTop = msgInput.scrollTop;
+    }
+  }, { passive: false });
   msgInput.addEventListener('paste', handleImagePaste);
   msgInput.addEventListener('blur', () => {
     setTimeout(closeAC, 150);
@@ -2797,7 +3165,17 @@
       }
     }
     if (e.key === 'Enter') {
-      requestAnimationFrame(refreshComposer);
+      composerStickToBottom = true;
+      requestAnimationFrame(() => {
+        refreshComposer();
+        ensureComposerBottomVisible();
+      });
+    }
+    if (
+      ['Backspace', 'Delete'].includes(e.key) &&
+      msgInput.selectionEnd >= msgInput.value.length - 1
+    ) {
+      composerStickToBottom = true;
     }
     if (e.ctrlKey && e.key === 'Enter') {
       e.preventDefault();
@@ -2809,6 +3187,7 @@
   sendBtn.addEventListener('click', () => sendMessage('queued'));
   compactBtn.addEventListener('click', compactChat);
   eraseBtn.addEventListener('click', eraseChat);
+  resetTokenStatsBtn.addEventListener('click', resetTokenStats);
   cancelBtn.addEventListener('click', cancelDispatch);
   queueBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2919,13 +3298,15 @@
   });
 
   async function init() {
+    loadStoredScrollStates();
     refreshComposer();
     await loadSessions();
     renderSessions();
     connectWS();
-    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
+    await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd(), fetchGlobalLog()]);
     setInterval(() => {
       loadSessions().catch(() => {});
+      fetchGlobalLog().catch(() => {});
     }, 3000);
   }
 

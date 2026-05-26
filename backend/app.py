@@ -16,11 +16,12 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.websockets import WebSocketState
 
-from .state import AGENTS, Session, SessionRegistry, build_agent_info, rebuild_chat_from_events
+from .state import AGENTS, Session, SessionRegistry, build_agent_info, rebuild_chat_from_events, runtime_family_for_provider
 from .daemon import session_daemon_loop
 from .summarizer import compact_chat
 from .completions import list_agents, list_project_files
 from .agent_memory import read_agent_memory_for_ui
+from .prompt_builder import preview_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -149,15 +150,6 @@ def _find_turn_line(body: dict, turns: list[tuple[int, dict]]) -> int | None:
         for line_idx, event in turns:
             if line_idx != event_line_idx:
                 continue
-            if isinstance(author, str) and event.get("author") != author:
-                return None
-            if isinstance(display_ts, str) and event.get("display_ts") != display_ts:
-                return None
-            if (
-                isinstance(original_text, str)
-                and (event.get("text") or "").rstrip() != original_text.rstrip()
-            ):
-                return None
             return line_idx
 
     if isinstance(author, str) and isinstance(display_ts, str) and isinstance(original_text, str):
@@ -190,6 +182,19 @@ def _turn_header(event: dict) -> str:
     author = event.get("author") or "system"
     display_ts = event.get("display_ts") or ""
     return f"## [@{author}] {display_ts}"
+
+
+def _compaction_display_ts(event: dict) -> str:
+    created_at = str(event.get("ts") or "")
+    if created_at:
+        try:
+            from datetime import datetime
+
+            dt = datetime.fromisoformat(created_at)
+            return "compacted " + dt.strftime("%Y-%m-%d-%H%M%S")
+        except ValueError:
+            return "compacted " + created_at
+    return "compacted summary"
 
 
 def _active_dispatches_for_header(session: Session, header: str) -> list[dict]:
@@ -445,6 +450,7 @@ def _start_session_daemon(app: FastAPI, session: Session) -> None:
 async def lifespan(app: FastAPI):
     registry: SessionRegistry = app.state.council_registry
     app.state.council_daemons = {}
+    registry.add_global_log("Council server started", f"sessions={len(registry.sessions)}")
     for session in registry.sessions.values():
         _start_session_daemon(app, session)
     yield
@@ -486,6 +492,10 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "sessions": registry.list(),
             "active_session_id": registry.active_session_id,
         }
+
+    @app.get("/api/global-log")
+    async def get_global_log():
+        return {"events": registry.global_log()}
 
     @app.post("/api/sessions")
     async def post_session(body: dict):
@@ -687,6 +697,41 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         await session.notify_chat_update()
         return {"ok": True, "cancelled_dispatches": len(removed_dispatches)}
 
+    @app.post("/api/sessions/{session_id}/reset_to_turn")
+    async def post_reset_to_turn(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        if session.busy or session.active_dispatches or session.dispatch_queue:
+            return JSONResponse(
+                {
+                    "error": "cannot reset discussion while agents are running or queued",
+                    "active_dispatches": session.active_dispatches_snapshot(),
+                    "dispatch_queue": session.dispatch_queue_snapshot(),
+                },
+                status_code=409,
+            )
+        lines, turns = _load_event_lines(session)
+        target_idx = _find_turn_line(body, turns)
+        if target_idx is None and isinstance(body.get("event_line_idx"), int):
+            candidate_idx = body["event_line_idx"]
+            if 0 <= candidate_idx < len(lines):
+                try:
+                    candidate = json.loads(lines[candidate_idx])
+                except json.JSONDecodeError:
+                    candidate = {}
+                if candidate.get("kind") == "compaction":
+                    target_idx = candidate_idx
+        if target_idx is None:
+            return JSONResponse({"error": "turn not found or already archived"}, status_code=404)
+        archive = session.reset_to_event_line(target_idx)
+        await session.add_trace(
+            "system",
+            "discussion reset",
+            f"Reset to turn {body.get('index')}; archived discarded tail under {archive['archive_dir']}.",
+        )
+        await session.notify_chat_update()
+        await session.broadcast_status()
+        return {"ok": True, **archive}
+
     @app.post("/api/sessions/{session_id}/edit_turn")
     async def post_edit_turn(session_id: str, body: dict):
         session = _get_session(registry, session_id)
@@ -739,6 +784,7 @@ def create_app(registry: SessionRegistry) -> FastAPI:
     async def post_restart(session_id: str):
         session = _get_session(registry, session_id)
         await session.add_trace("system", "restart requested")
+        registry.add_global_log("Council restart requested", f"session={session.name} ({session.id})")
 
         async def _delayed_exit():
             await asyncio.sleep(0.5)
@@ -886,12 +932,104 @@ def create_app(registry: SessionRegistry) -> FastAPI:
             "dispatch": session.effective_config().get("dispatch", {}),
             "global_dispatch": registry.config.get("dispatch", {}),
             "compact": session.compact_status(),
+            "token_totals": session.token_totals(),
         }
+
+    @app.post("/api/sessions/{session_id}/reset_token_stats")
+    async def post_reset_token_stats(session_id: str, agent: str = ""):
+        session = _get_session(registry, session_id)
+        if session.busy or session.active_dispatches or session.dispatch_queue:
+            return JSONResponse(
+                {"error": "cannot reset token stats while agents are running or queued"},
+                status_code=409,
+            )
+        agent = str(agent or "").strip().lower()
+        if agent and agent not in AGENTS:
+            return JSONResponse(
+                {"error": f"unknown agent: {agent}"},
+                status_code=400,
+            )
+        result = session.reset_token_stats(agent=agent or None)
+        label = f"@{agent}" if agent else "all"
+        registry.add_global_log(
+            f"Token stats reset ({label})",
+            f"session={session.name} ({session.id}) agent={agent or 'all'}",
+        )
+        await session.broadcast_status()
+        return {"ok": True, **result}
 
     @app.get("/api/sessions/{session_id}/trace")
     async def get_trace(session_id: str):
         session = _get_session(registry, session_id)
         return {"events": session.trace_events}
+
+    @app.post("/api/sessions/{session_id}/prompt_preview")
+    async def post_prompt_preview(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        draft_text = str(body.get("draft_text") or "").strip()
+        agents = body.get("agents")
+        if not isinstance(agents, list) or not agents:
+            return JSONResponse(
+                {"error": "agents list is required"},
+                status_code=400,
+            )
+        config = session.effective_config()
+        dispatch = config.get("dispatch", {})
+        aliases = config.get("aliases", {})
+        context_windows = config.get("context_windows", {})
+        results: dict[str, dict] = {}
+        for agent in agents:
+            if agent not in AGENTS:
+                continue
+            provider = config.get("providers", {}).get(agent, "")
+            family = runtime_family_for_provider(provider, agent)
+            max_chars_map = {
+                "claude": int(dispatch.get("max_prompt_chars", 25000)),
+                "codex": int(dispatch.get("max_prompt_chars", 25000)),
+                "deepseek": int(dispatch.get("max_prompt_chars", 25000)),
+                "hermes": int(dispatch.get(
+                    "council_injection_max_chars",
+                    dispatch.get("hermes_max_prompt_chars", 6000),
+                )),
+            }
+            max_chars = max_chars_map.get(family, int(dispatch.get("max_prompt_chars", 25000)))
+            min_tail = 8
+            inc_memory = True
+            inc_actions = True
+            rules_budget = None
+            summary_budget = None
+            if family == "hermes":
+                min_tail = int(dispatch.get("hermes_min_chat_tail_turns", 2))
+                inc_memory = str(dispatch.get("hermes_include_agent_memory", "false")).strip().lower() in {"1", "true", "yes", "on"}
+                inc_actions = str(dispatch.get("hermes_include_recent_actions", "false")).strip().lower() in {"1", "true", "yes", "on"}
+                rules_budget = int(dispatch.get("hermes_project_rules_max_chars", 1500))
+                summary_budget = int(dispatch.get("hermes_compaction_summary_max_chars", 1500))
+            attachments = dispatch.get("attachments", {})
+            attachment_policy = str(attachments.get(agent, "") if isinstance(attachments, dict) else "")
+            role = config.get("roles", {}).get(agent, "")
+            breakdown = preview_prompt(
+                agent,
+                session.project_root,
+                session.chat_path,
+                draft_text=draft_text,
+                max_chars=max_chars,
+                role=role,
+                session_dir=session.session_dir,
+                session_name=session.name,
+                aliases=aliases,
+                compactions_path=session.compactions_path,
+                attachment_policy=attachment_policy,
+                min_chat_tail_turns=min_tail,
+                include_agent_memory=inc_memory,
+                include_recent_actions=inc_actions,
+                project_rules_max_chars=rules_budget,
+                compaction_summary_max_chars=summary_budget,
+                council_context_hint=family == "hermes",
+            )
+            context_window = int(context_windows.get(agent, 0)) or 200000
+            breakdown["context_window"] = context_window
+            results[agent] = breakdown
+        return results
 
     @app.get("/api/sessions/{session_id}/events")
     async def get_events(session_id: str):
@@ -910,6 +1048,17 @@ def create_app(registry: SessionRegistry) -> FastAPI:
                 continue
             if event.get("kind") == "compaction":
                 turns.clear()
+                turns.append({
+                    "event_line_idx": line_idx,
+                    "author": "system",
+                    "display_ts": _compaction_display_ts(event),
+                    "prompt_tokens_est": None,
+                    "response_tokens_est": None,
+                    "token_usage": None,
+                    "metadata": {"compaction_id": event.get("compaction_id")},
+                    "tool_calls": [],
+                    "agent_memory": None,
+                })
                 continue
             if event.get("kind") not in ("user_turn", "agent_turn", "system_turn"):
                 continue

@@ -647,6 +647,27 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         reserved_turn = False
         response_header = ""
         working_root = session.working_root
+
+        async def update_running_preview(source: str, text: str) -> None:
+            if not reserved_turn:
+                return
+            cleaned = re.sub(r"\s+", " ", text or "").strip()
+            if len(cleaned) > 320:
+                cleaned = cleaned[-320:]
+            preview = "Dispatch running. Waiting for the agent's final response."
+            if cleaned:
+                preview += f"\n\nLatest activity ({source}):\n```text\n{cleaned}\n```"
+            session.update_reserved_agent_turn(
+                request["id"],
+                text=preview,
+                metadata={
+                    "dispatch_mode": request.get("mode", "parallel"),
+                    "tool_calls": build_tool_provenance(dispatch_trace_events),
+                },
+                status="running",
+            )
+            await session.notify_chat_update()
+
         try:
             role = _get_role(config, mention)
             provider = _get_provider(config, mention)
@@ -738,14 +759,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     f"{source}",
                     text,
                 )
-                if reserved_turn:
-                    session.update_reserved_agent_turn(
-                        request["id"],
-                        metadata={
-                            "tool_calls": build_tool_provenance(dispatch_trace_events),
-                        },
-                    )
-                    await session.notify_chat_update()
+                await update_running_preview(source, text)
 
             async def run_dispatch() -> DispatchResult:
                 if runtime_family == "claude":
@@ -777,6 +791,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                             f"opencode {source}",
                             text,
                         )
+                        await update_running_preview(f"opencode {source}", text)
 
                     return await dispatch_deepseek(
                         prompt, working_root,

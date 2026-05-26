@@ -51,6 +51,12 @@ codex = ["low", "medium", "high", "xhigh"]
 deepseek = ["low", "medium", "high"]
 hermes = ["low", "medium", "high"]
 
+[context_windows]
+claude = 200000
+codex = 200000
+deepseek = 128000
+hermes = 128000
+
 [dispatch]
 timeout_seconds = 0
 max_prompt_chars = 25000

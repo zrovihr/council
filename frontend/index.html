@@ -35,6 +35,7 @@
       <button id="config-toggle-btn" title="Edit agent model, effort, and role">Config</button>
       <span id="status-indicator" class="idle">&#9679; idle</span>
       <span id="compact-status" title="Auto compact remaining">compact --</span>
+      <button id="reset-token-stats-btn" title="Reset session token counters">Reset token stats</button>
       <div id="queue-menu-wrap">
         <button id="queue-btn" class="hidden" type="button" title="Show active and queued agents">Queue</button>
         <div id="queue-menu" class="hidden"></div>
@@ -69,6 +70,7 @@
           <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek / @hermes activates that agent. Use @@ to reply to the last agent."></textarea>
         </div>
       </div>
+      <div id="prompt-preview" class="hidden"></div>
       <div id="send-actions">
         <button id="send-now-btn" title="Send and start mentioned agents immediately">Send</button>
         <button id="send-btn" title="Queue (Ctrl+Enter)">Queue</button>
@@ -78,6 +80,8 @@
   <aside id="trace-panel">
     <div id="trace-title">Agent Trace</div>
     <div id="trace-list"></div>
+    <div id="global-log-title">Global Log</div>
+    <div id="global-log-list"></div>
   </aside>
 </div>
 <div id="mobile-drawer-backdrop" class="hidden"></div>

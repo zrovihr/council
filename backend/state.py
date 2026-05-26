@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 AGENTS = ("claude", "codex", "deepseek", "hermes")
 ALIAS_KEYS = (*AGENTS, "you")
-STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui")
+STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui", "stats")
 SENSITIVE_SECTIONS = {"api_keys"}
 SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -61,6 +61,7 @@ def default_session_state() -> dict:
         "api_keys": {},
         "aliases": {},
         "ui": {},
+        "stats": {},
     }
 
 
@@ -525,6 +526,93 @@ def load_trace_from_events(events_path: Path, limit: int = 100) -> list[dict]:
     return trace_events[-limit:]
 
 
+def load_global_log(path: Path, limit: int = 200) -> list[dict]:
+    if not path.exists():
+        return []
+    events: list[dict] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        events.append({
+            "time": _trace_time(event),
+            "message": clean_trace_text(event.get("message") or ""),
+            "detail": clean_trace_text(event.get("detail") or ""),
+            "count": int(event.get("count") or 1),
+        })
+    return events[-limit:]
+
+
+def token_totals_from_events(events_path: Path, start_line: int = 0,
+                             per_agent_start: dict | None = None) -> dict:
+    totals = {
+        agent: {
+            "prompt_tokens_est": 0,
+            "response_tokens_est": 0,
+            "total_tokens_est": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "turns": 0,
+        }
+        for agent in AGENTS
+    }
+    totals["all"] = {
+        "prompt_tokens_est": 0,
+        "response_tokens_est": 0,
+        "total_tokens_est": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "turns": 0,
+    }
+    if not events_path.exists():
+        return totals
+    per_agent_start = per_agent_start or {}
+    for line_idx, line in enumerate(events_path.read_text(encoding="utf-8", errors="replace").splitlines()):
+        if line_idx < start_line:
+            continue
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("kind") != "agent_turn":
+            continue
+        author = event.get("author")
+        if author not in AGENTS:
+            continue
+        agent_start = per_agent_start.get(author, 0)
+        if line_idx < agent_start:
+            continue
+        meta = event.get("metadata") or {}
+        usage = event.get("token_usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        prompt_est = int(event.get("prompt_tokens_est") or meta.get("prompt_tokens_est") or 0)
+        response_est = int(event.get("response_tokens_est") or meta.get("response_tokens_est") or 0)
+        prompt_actual = int(usage.get("prompt_tokens") or 0)
+        completion_actual = int(usage.get("completion_tokens") or 0)
+        total_actual = int(usage.get("total_tokens") or 0)
+        if not total_actual and (prompt_actual or completion_actual):
+            total_actual = prompt_actual + completion_actual
+        for bucket in (totals[author], totals["all"]):
+            bucket["prompt_tokens_est"] += prompt_est
+            bucket["response_tokens_est"] += response_est
+            bucket["total_tokens_est"] += prompt_est + response_est
+            bucket["prompt_tokens"] += prompt_actual
+            bucket["completion_tokens"] += completion_actual
+            bucket["total_tokens"] += total_actual
+            bucket["turns"] += 1
+    return totals
+
+
 @dataclass
 class Session:
     id: str
@@ -786,6 +874,136 @@ class Session:
             "archived": archived,
         }
 
+    def reset_to_event_line(self, event_line_idx: int) -> dict:
+        """Archive and remove live context after the selected event line."""
+        lines = self.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if event_line_idx < 0 or event_line_idx >= len(lines):
+            raise IndexError(event_line_idx)
+        try:
+            target = json.loads(lines[event_line_idx])
+        except json.JSONDecodeError as exc:
+            raise ValueError("target event is not valid JSON") from exc
+        if target.get("kind") not in {"user_turn", "agent_turn", "system_turn", "compaction"}:
+            raise ValueError("target event cannot be used as a reset point")
+
+        kept = lines[: event_line_idx + 1]
+        removed = lines[event_line_idx + 1 :]
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        reset_archive_dir = self.archive_dir / f"reset-{timestamp}"
+        reset_archive_dir.mkdir(parents=True, exist_ok=True)
+        archived: list[str] = []
+
+        def archive_text(name: str, text: str) -> None:
+            if not text:
+                return
+            path = reset_archive_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            try:
+                archived.append(str(path.relative_to(self.session_dir)).replace("\\", "/"))
+            except ValueError:
+                archived.append(str(path))
+
+        archive_text("removed-events.jsonl", "\n".join(removed) + ("\n" if removed else ""))
+        if self.chat_path.exists():
+            archive_text("chat-before-reset.md", self.chat_path.read_text(encoding="utf-8", errors="replace"))
+
+        self.events_path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        stats = self.state.get("stats")
+        if isinstance(stats, dict):
+            current_start = self.token_stats_start_line()
+            if current_start > len(kept):
+                stats["token_stats_start_line"] = len(kept)
+                self.save_state()
+        rebuild_chat_from_events(self.events_path, self.chat_path, self.compactions_path)
+
+        memory_root = self.session_dir / "agent-memory"
+        for agent in AGENTS:
+            agent_root = memory_root / agent
+            current_path = agent_root / "current.md"
+            if current_path.exists():
+                archive_text(
+                    f"agent-memory/{agent}/current-before-reset.md",
+                    current_path.read_text(encoding="utf-8", errors="replace"),
+                )
+                current_path.write_text("", encoding="utf-8")
+            runs_path = agent_root / "runs.jsonl"
+            if runs_path.exists():
+                archive_text(
+                    f"agent-memory/{agent}/runs-before-reset.jsonl",
+                    runs_path.read_text(encoding="utf-8", errors="replace"),
+                )
+                runs_path.write_text("", encoding="utf-8")
+
+        self.touch()
+        return {
+            "archive_dir": str(reset_archive_dir.relative_to(self.session_dir)).replace("\\", "/"),
+            "archived": archived,
+            "removed_events": len([line for line in removed if line.strip()]),
+        }
+
+    def token_stats_start_line(self, agent: str | None = None) -> int:
+        stats = self.state.get("stats") if isinstance(self.state, dict) else {}
+        if not isinstance(stats, dict):
+            return 0
+        if agent:
+            per_agent = stats.get("agent_token_start_lines")
+            if isinstance(per_agent, dict):
+                try:
+                    return max(0, int(per_agent.get(agent) or 0))
+                except (TypeError, ValueError):
+                    return 0
+            return 0
+        try:
+            return max(0, int(stats.get("token_stats_start_line") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def token_totals(self) -> dict:
+        per_agent_start = {}
+        stats = self.state.get("stats") if isinstance(self.state, dict) else {}
+        if isinstance(stats, dict):
+            agent_start = stats.get("agent_token_start_lines")
+            if isinstance(agent_start, dict):
+                per_agent_start = {
+                    a: max(0, int(agent_start.get(a) or 0))
+                    for a in AGENTS
+                }
+        global_start = self.token_stats_start_line()
+        return token_totals_from_events(
+            self.events_path,
+            global_start,
+            per_agent_start=per_agent_start or None,
+        )
+
+    def reset_token_stats(self, agent: str | None = None) -> dict:
+        lines = self.events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        stats = self.state.setdefault("stats", {})
+        if not isinstance(stats, dict):
+            stats = {}
+            self.state["stats"] = stats
+        now = utc_now()
+        if agent and agent in AGENTS:
+            per_agent = stats.setdefault("agent_token_start_lines", {})
+            if not isinstance(per_agent, dict):
+                per_agent = {}
+                stats["agent_token_start_lines"] = per_agent
+            per_agent[agent] = len(lines)
+            stats["agent_token_stats_reset_at"] = now
+            self.save_state()
+            return {
+                "token_stats_start_line": per_agent[agent],
+                "agent": agent,
+                "token_stats_reset_at": now,
+            }
+        stats["token_stats_start_line"] = len(lines)
+        stats["token_stats_reset_at"] = now
+        self.save_state()
+        return {
+            "token_stats_start_line": stats["token_stats_start_line"],
+            "token_stats_reset_at": now,
+        }
+
     def append_turn(
         self,
         author: str,
@@ -898,6 +1116,7 @@ class Session:
             "session_id": self.id,
             "agents": build_agent_info(self.config, self.state),
             "compact": self.compact_status(),
+            "token_totals": self.token_totals(),
         })
 
     def active_dispatches_snapshot(self) -> list[dict]:
@@ -1227,6 +1446,7 @@ class SessionRegistry:
         self.sessions_dir = self._project_sessions_dir(default_project_root)
         self.legacy_sessions_dir = council_root / "sessions"
         self.registry_path = self.sessions_dir / "sessions.json"
+        self.global_log_path = self.sessions_dir / "global-events.jsonl"
         self.config = config
         self.config_path = config_path
         self.secrets_path = council_root / ".council" / "secrets.json"
@@ -1470,6 +1690,52 @@ class SessionRegistry:
             json.dumps(data, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def add_global_log(self, message: str, detail: str = "") -> dict:
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": utc_now(),
+            "message": clean_trace_text(message),
+            "detail": clean_trace_text(detail),
+            "count": 1,
+        }
+        lines = (
+            self.global_log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if self.global_log_path.exists()
+            else []
+        )
+        if lines:
+            try:
+                previous = json.loads(lines[-1])
+            except json.JSONDecodeError:
+                previous = None
+            if (
+                isinstance(previous, dict)
+                and clean_trace_text(previous.get("message") or "") == event["message"]
+                and clean_trace_text(previous.get("detail") or "") == event["detail"]
+            ):
+                previous["ts"] = event["ts"]
+                previous["count"] = int(previous.get("count") or 1) + 1
+                lines[-1] = json.dumps(previous, ensure_ascii=True)
+                self.global_log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                event["count"] = previous["count"]
+                return {
+                    "time": _trace_time(previous),
+                    "message": event["message"],
+                    "detail": event["detail"],
+                    "count": event["count"],
+                }
+        with open(self.global_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=True) + "\n")
+        return {
+            "time": _trace_time(event),
+            "message": event["message"],
+            "detail": event["detail"],
+            "count": event["count"],
+        }
+
+    def global_log(self, limit: int = 200) -> "list[dict]":
+        return load_global_log(self.global_log_path, limit=limit)
 
     async def update_global_config(self, changes: dict) -> None:
         touched_secrets = False

@@ -31,7 +31,8 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
                  include_recent_actions: bool = True,
                  project_rules_max_chars: int | None = None,
                  compaction_summary_max_chars: int | None = None,
-                 council_context_hint: bool = False) -> str:
+                 council_context_hint: bool = False,
+                 _return_breakdown: bool = False) -> str | dict:
     aliases = aliases or {}
     attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
@@ -221,6 +222,8 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         chat_tail = _rewrite_prompt_aliases(chat_tail, aliases)
         clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
         prompt = "\n".join(clauses)
+    if _return_breakdown:
+        return {"prompt": prompt}
     return prompt
 
 
@@ -531,3 +534,88 @@ def _compaction_prefix_from_chat(chat_md_path: Path) -> str:
         return ""
     end = matches[1][0] if len(matches) > 1 else len(text)
     return text[:end].strip()
+
+
+def _section_breakdown(prompt: str) -> dict:
+    breakdown: dict[str, int] = {
+        "total": len(prompt),
+        "safety_rules": 0,
+        "project_rules": 0,
+        "chat_howto": 0,
+        "session": 0,
+        "role": 0,
+        "compacted_context": 0,
+        "private_memory": 0,
+        "recent_actions": 0,
+        "chat_tail": 0,
+        "your_turn": 0,
+        "user_msg": 0,
+    }
+    positions = []
+    for key, prefix in SECTION_HEADER_PREFIXES.items():
+        idx = prompt.find(prefix)
+        if idx >= 0:
+            positions.append((idx, key))
+    positions.sort()
+    for i, (start, key) in enumerate(positions):
+        end = positions[i + 1][0] if i + 1 < len(positions) else len(prompt)
+        breakdown[key] = max(0, end - start)
+    return breakdown
+
+
+SECTION_HEADER_PREFIXES = {
+    "safety_rules": "=== SAFETY RULES",
+    "project_rules": "=== PROJECT RULES",
+    "chat_howto": "=== HOW THIS CHAT WORKS",
+    "session": "=== CURRENT SESSION",
+    "role": "=== ROLE FOR THIS AGENT",
+    "compacted_context": "=== SHARED COMPACTED CONTEXT",
+    "private_memory": "=== YOUR PRIVATE EFFORT MEMORY",
+    "recent_actions": "=== RECENT AGENT TOOL ACTIVITY",
+    "chat_tail": "=== CHAT TAIL",
+    "your_turn": "=== YOUR TURN",
+}
+
+
+def _chars_to_tokens(chars: int) -> int:
+    return max(0, chars // 4)
+
+
+def preview_prompt(target_agent: str, project_root: Path | None, chat_md_path: Path,
+                   draft_text: str = "", max_chars: int = 25000, role: str = "",
+                   session_dir: Path | None = None, session_name: str = "",
+                   aliases: dict | None = None, compactions_path: Path | None = None,
+                   attachment_policy: str | None = None, min_chat_tail_turns: int = 8,
+                   include_agent_memory: bool = True, include_recent_actions: bool = True,
+                   project_rules_max_chars: int | None = None,
+                   compaction_summary_max_chars: int | None = None,
+                   council_context_hint: bool = False) -> dict:
+
+    prompts: dict[str, str] = build_prompt(
+        target_agent, project_root, chat_md_path,
+        max_chars, role=role, session_dir=session_dir,
+        aliases=aliases, session_name=session_name,
+        compactions_path=compactions_path,
+        attachment_policy=attachment_policy,
+        min_chat_tail_turns=min_chat_tail_turns,
+        include_agent_memory=include_agent_memory,
+        include_recent_actions=include_recent_actions,
+        project_rules_max_chars=project_rules_max_chars,
+        compaction_summary_max_chars=compaction_summary_max_chars,
+        council_context_hint=council_context_hint,
+        _return_breakdown=True,
+    )
+    prompt_str = prompts["prompt"]
+    breakdown_chars = _section_breakdown(prompt_str)
+    if draft_text.strip():
+        user_lines = "\n\n" + draft_text.strip()
+        breakdown_chars["user_msg"] = len(user_lines)
+        breakdown_chars["total"] += len(user_lines)
+    else:
+        breakdown_chars["user_msg"] = 0
+
+    breakdown: dict[str, int] = {}
+    for key, chars in breakdown_chars.items():
+        breakdown[key] = _chars_to_tokens(chars)
+        breakdown[key + "_chars"] = chars
+    return breakdown
