@@ -9,7 +9,7 @@
   const msgHighlights = document.getElementById('msg-highlights');
   const sendNowBtn = document.getElementById('send-now-btn');
   const sendBtn = document.getElementById('send-btn');
-  const agentButtons = document.querySelectorAll('.agent-btn');
+  function getAgentPromptRows() { return document.querySelectorAll('.agent-prompt-name'); }
   const compactBtn = document.getElementById('compact-btn');
   const eraseBtn = document.getElementById('erase-btn');
   const cancelBtn = document.getElementById('cancel-btn');
@@ -26,7 +26,7 @@
   const queueMenu = document.getElementById('queue-menu');
   const projectNameEl = document.getElementById('project-name');
   const agentModelsEl = document.getElementById('agent-models');
-  const promptPreviewEl = document.getElementById('prompt-preview');
+  const agentPromptBarEl = document.getElementById('agent-prompt-bar');
   const mobileMenuBtn = document.getElementById('mobile-menu-btn');
   const mobileDrawerBackdrop = document.getElementById('mobile-drawer-backdrop');
   const configToggleBtn = document.getElementById('config-toggle-btn');
@@ -78,8 +78,9 @@
   let lastPreviewDraft = '';
   let lastPreviewAgents = null;
   let lastSentPreviewAgents = null;
-  const AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
-  const COLOR_IDS = ['you', ...AGENT_IDS];
+  let lastPreviewData = null;
+  const DEFAULT_AGENT_IDS = ['claude', 'codex', 'deepseek', 'hermes'];
+  let AGENT_IDS = [...DEFAULT_AGENT_IDS];
   const DEFAULT_COLORS = {
     you: '#ffffff',
     claude: '#7dd3fc',
@@ -88,6 +89,18 @@
     hermes: '#86efac',
     primary: '#00ff41',
   };
+  const AGENT_COLORS = [
+    '#7dd3fc', '#c4b5fd', '#fdba74', '#86efac',
+    '#fca5a5', '#a5b4fc', '#fde047', '#5eead4',
+    '#d8b4fe', '#f0abfc', '#67e8f9', '#fb923c',
+  ];
+  function getColorIds() { return ['you', ...AGENT_IDS]; }
+  function colorForAny(id, colors) {
+    if (colors && colors[id]) return colors[id];
+    if (DEFAULT_COLORS[id]) return DEFAULT_COLORS[id];
+    const idx = AGENT_IDS.indexOf(id);
+    return AGENT_COLORS[idx >= 0 ? idx % AGENT_COLORS.length : 0];
+  }
   const ATTACHMENT_POLICY_OPTIONS = [
     ['path-visible', 'Path visible'],
     ['placeholder', 'Placeholder only'],
@@ -216,19 +229,22 @@
     }
 
     userScrolledUp = true;
-    let restored = false;
+    newMsgsBtn.classList.remove('hidden');
+    const maxScroll = Math.max(0, chatArea.scrollHeight - chatArea.clientHeight);
+
     if (state.anchorKey) {
       const selector = `.turn-card[data-scroll-key="${escapeCssValue(state.anchorKey)}"]`;
       const anchor = chatInner.querySelector(selector);
       if (anchor) {
         chatArea.scrollTop = Math.max(0, anchor.offsetTop - state.anchorOffset);
-        restored = true;
+      } else {
+        chatArea.scrollTop = maxScroll;
       }
+      return;
     }
-    if (!restored) {
-      chatArea.scrollTop = Math.max(0, state.scrollTop);
-    }
-    newMsgsBtn.classList.remove('hidden');
+
+    const desiredTop = state.scrollTop || 0;
+    chatArea.scrollTop = desiredTop <= maxScroll ? desiredTop : maxScroll;
   }
 
   function scrollStateForRender(sessionId) {
@@ -456,6 +472,12 @@
   function renderTurns(turns, tokenData, scrollState = readChatScrollState()) {
     isRenderingChat = true;
 
+    const openDetails = {};
+    chatInner.querySelectorAll('details.turn-tools[open]').forEach(function (el) {
+      var card = el.closest('.turn-card[data-scroll-key]');
+      if (card) openDetails[card.dataset.scrollKey] = true;
+    });
+
     chatInner.innerHTML = '';
     const tokenQueues = tokenData && tokenData.byKey ? tokenData.byKey : null;
     const tokenQueueOffsets = {};
@@ -467,7 +489,7 @@
       header.className = 'turn-header';
 
       const avatarClass = avatarClassForAuthor(turn.author);
-      const hasAgentIcon = ['claude', 'codex', 'deepseek'].includes(avatarClass);
+      const hasAgentIcon = DEFAULT_AGENT_IDS.includes(avatarClass) && avatarClass !== 'hermes';
       const avatar = document.createElement(hasAgentIcon ? 'img' : 'span');
       avatar.className = `turn-avatar ${avatarClass}`;
       if (avatar.tagName === 'IMG') {
@@ -669,6 +691,15 @@
       }
       chatInner.appendChild(card);
     });
+
+    for (var _i = 0; _i < chatInner.children.length; _i++) {
+      var card = chatInner.children[_i];
+      var key = card.dataset && card.dataset.scrollKey;
+      if (key && openDetails[key]) {
+        var details = card.querySelector('details.turn-tools');
+        if (details) details.open = true;
+      }
+    }
 
     restoreChatScrollState(scrollState);
     saveActiveScrollState(true);
@@ -1027,7 +1058,15 @@
   }
 
   function renderComposerHighlights(text) {
-    const tokenRe = /```[\s\S]*?```|``[^`\n]*(?:`(?!`)[^`\n]*)*``|`[^`\n`]*`|@(?:claude|codex|deepseek|[A-Za-z][\w-]*|\.[\w-]+(?:\.[\w-]+)+)|(?:[a-zA-Z]:[\\/]|\/|\.\.?[\\/])?[\w.\-\\/]+[\\/][\w.\-\\/]*\.[a-zA-Z]{1,8}/g;
+    const knownAgents = AGENT_IDS.join('|');
+    const tokenRe = new RegExp(
+      '```[\\s\\S]*?```|'
+      + '``[^`\\n]*(?:`(?!`)[^`\\n]*)*``|'
+      + '`[^`\\n`]*`|'
+      + '@(?:' + knownAgents + '|[A-Za-z][\\w-]*|\\.[\\w-]+(?:\\.[\\w-]+)+)|'
+      + '(?:[a-zA-Z]:[\\\\/]|\\/|\\.\\.?[\\\\/])?[\\w.\\-\\\\/]+[\\\\/][\\w.\\-\\\\/]*\\.[a-zA-Z]{1,8}',
+      'g'
+    );
     let html = '';
     let lastIdx = 0;
     let m;
@@ -1229,7 +1268,7 @@
   function applyAgentColors(agents) {
     const root = document.documentElement;
     root.style.setProperty('--accent', colorFor('primary', agents));
-    for (const id of COLOR_IDS) {
+    for (const id of getColorIds()) {
       root.style.setProperty(`--${id}`, colorFor(id, agents));
     }
   }
@@ -1427,11 +1466,13 @@
     latestTurns = [];
     latestTokenData = null;
     chatInner.innerHTML = '';
+    msgInput.value = '';
     const savedState = sessionScrollStates.get(sessionId);
     userScrolledUp = Boolean(savedState && !savedState.atBottom);
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
+    refreshPromptPreview();
   }
 
   async function createSession(name, projectRoot) {
@@ -1479,6 +1520,7 @@
     renderSessions();
     connectWS();
     await Promise.all([fetchChat(), fetchStatus(), fetchTrace(), fetchAgentsMd()]);
+    refreshPromptPreview();
   }
 
   async function renameSession(sessionId, newName) {
@@ -1739,39 +1781,16 @@
   }
 
   async function fetchPromptPreview() {
-    if (!activeSessionId) return;
+    if (!activeSessionId) {
+      renderAgentPromptBar(null);
+      return;
+    }
+    const agents = AGENT_IDS;
     const draft = msgInput.value.trim();
-    if (!draft) {
-      if (lastPreviewAgents && lastPreviewAgents.length) {
-        if (JSON.stringify(lastPreviewAgents) === lastSentPreviewAgents) return;
-        lastSentPreviewAgents = JSON.stringify(lastPreviewAgents);
-        try {
-          const res = await fetch(sessionApi('/prompt_preview'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ draft_text: '', agents: lastPreviewAgents }),
-          });
-          if (!res.ok) return;
-          const data = await res.json();
-          if (draft !== msgInput.value.trim()) return;
-          renderPromptPreview(data);
-        } catch (_) {}
-      } else {
-        promptPreviewEl.classList.add('hidden');
-        promptPreviewEl.innerHTML = '';
-      }
+    if (draft === lastPreviewDraft && lastPreviewData) {
+      renderAgentPromptBar(lastPreviewData);
       return;
     }
-    const agents = findMentionedAgents(draft);
-    if (!agents.length) {
-      promptPreviewEl.classList.add('hidden');
-      promptPreviewEl.innerHTML = '';
-      lastPreviewDraft = '';
-      lastPreviewAgents = null;
-      lastSentPreviewAgents = null;
-      return;
-    }
-    if (draft === lastPreviewDraft) return;
     lastPreviewDraft = draft;
     lastPreviewAgents = agents;
     lastSentPreviewAgents = JSON.stringify(agents);
@@ -1784,8 +1803,17 @@
       if (!res.ok) return;
       const data = await res.json();
       if (draft !== msgInput.value.trim()) return;
-      renderPromptPreview(data);
-    } catch (_) {}
+      lastPreviewData = data;
+      renderAgentPromptBar(data);
+    } catch (_) {
+      renderAgentPromptBar(null);
+    }
+  }
+
+  function refreshPromptPreview() {
+    lastPreviewDraft = '';
+    lastPreviewData = null;
+    schedulePromptPreview();
   }
 
   function schedulePromptPreview() {
@@ -1796,32 +1824,61 @@
     }, 250);
   }
 
-  function renderPromptPreview(data) {
+  function renderAgentPromptBar(data) {
+    agentPromptBarEl.innerHTML = '';
     if (!data || !Object.keys(data).length) {
-      promptPreviewEl.classList.add('hidden');
+      for (const id of AGENT_IDS) {
+        appendAgentPromptRow(id, null);
+      }
       return;
     }
-    promptPreviewEl.classList.remove('hidden');
-    promptPreviewEl.innerHTML = '';
-    const header = document.createElement('div');
-    header.className = 'preview-header';
-    header.textContent = 'Next prompt — token cost per agent:';
-    promptPreviewEl.appendChild(header);
-
+    let sharedChat = 0;
+    let sharedMsg = 0;
     for (const id of AGENT_IDS) {
       const info = data[id];
-      if (!info) continue;
-      const row = document.createElement('div');
-      row.className = `preview-row ${id}`;
+      if (info) {
+        sharedChat = info.chat_tail || 0;
+        sharedMsg = info.user_msg || 0;
+        break;
+      }
+    }
+    if (sharedChat || sharedMsg) {
+      const sharedRow = document.createElement('span');
+      sharedRow.className = 'agent-prompt-row shared';
+      const sharedName = document.createElement('span');
+      sharedName.className = 'agent-prompt-name';
+      sharedName.textContent = 'shared';
+      sharedRow.appendChild(sharedName);
+      const sharedCount = document.createElement('span');
+      sharedCount.className = 'agent-prompt-count';
+      const parts = [];
+      if (sharedChat) parts.push('chat ' + (formatTokenCount(sharedChat) || String(sharedChat)));
+      if (sharedMsg) parts.push('msg ' + (formatTokenCount(sharedMsg) || String(sharedMsg)));
+      sharedCount.textContent = parts.join(' + ');
+      sharedRow.appendChild(sharedCount);
+      agentPromptBarEl.appendChild(sharedRow);
+    }
+    for (const id of AGENT_IDS) {
+      const info = data[id] || null;
+      appendAgentPromptRow(id, info);
+    }
+  }
 
-      const label = document.createElement('span');
-      label.className = 'preview-agent';
-      label.textContent = '@' + displayAuthor(id);
+  function appendAgentPromptRow(id, info) {
+    const row = document.createElement('span');
+    row.className = 'agent-prompt-row ' + id;
 
+    const name = document.createElement('span');
+    name.className = 'agent-prompt-name';
+    name.textContent = '@' + displayAuthor(id);
+    name.title = 'Click to @mention ' + displayAuthor(id);
+    row.appendChild(name);
+
+    if (info) {
       const barWrap = document.createElement('span');
-      barWrap.className = 'preview-bar-wrap';
+      barWrap.className = 'agent-prompt-bar-wrap';
       const bar = document.createElement('span');
-      bar.className = 'preview-bar';
+      bar.className = 'agent-prompt-bar-fill';
       const total = info.total || 0;
       const ctxWindow = info.context_window || 200000;
       const pct = ctxWindow ? Math.min(100, Math.round((total / ctxWindow) * 100)) : 0;
@@ -1831,22 +1888,20 @@
       barWrap.appendChild(bar);
 
       const count = document.createElement('span');
-      count.className = 'preview-count';
+      count.className = 'agent-prompt-count';
       count.textContent = formatTokenCount(total) || String(total);
 
       const breakdown = document.createElement('span');
-      breakdown.className = 'preview-breakdown';
+      breakdown.className = 'agent-prompt-breakdown';
       const mem = formatTokenCount(info.private_memory || 0) || '0';
-      const chat = formatTokenCount(info.chat_tail || 0) || '0';
-      const user = formatTokenCount(info.user_msg || 0) || '0';
-      breakdown.textContent = 'mem ' + mem + ' + chat ' + chat + ' + msg ' + user;
+      breakdown.textContent = 'mem ' + mem;
 
-      row.appendChild(label);
       row.appendChild(barWrap);
       row.appendChild(count);
       row.appendChild(breakdown);
-      promptPreviewEl.appendChild(row);
     }
+
+    agentPromptBarEl.appendChild(row);
   }
 
   function turnIdentity(turn, turnIdx) {
@@ -2284,13 +2339,12 @@
       projectNameEl.textContent = data.project || '';
     }
     latestAgents = data.agents || {};
+    const dynIds = Object.keys(latestAgents).filter(k => k !== '_ui' && k !== 'you');
+    if (dynIds.length) AGENT_IDS = dynIds;
     latestGlobalAgents = data.global_agents || latestGlobalAgents || {};
     latestDispatch = data.dispatch || {};
     latestGlobalDispatch = data.global_dispatch || latestGlobalDispatch || {};
     applyAgentColors(latestAgents);
-    if (latestTurns.length) {
-      renderTurns(latestTurns, latestTokenData);
-    }
     renderAgentCards(latestAgents, data.token_totals);
     updateAgentButtons();
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
@@ -2428,6 +2482,12 @@
       title.className = 'agent-card-title';
       title.textContent = '@' + (info.alias || id);
 
+      if (!DEFAULT_AGENT_IDS.includes(id)) {
+        const color = info.color || colorForAny(id, {});
+        card.style.borderColor = color + '66';
+        title.style.color = color;
+      }
+
       const sub = document.createElement('div');
       sub.className = 'agent-card-sub';
       const modelName = info.model || info.runtime || 'default';
@@ -2463,13 +2523,20 @@
   }
 
   function updateAgentButtons() {
-    agentButtons.forEach((btn) => {
-      const id = btn.dataset.agent;
-      const info = latestAgents[id] || {};
-      btn.textContent = '@' + (info.alias || id);
-    });
     const aliases = AGENT_IDS.map((id) => '@' + ((latestAgents[id] && latestAgents[id].alias) || id));
     msgInput.placeholder = aliases.join(' / ') + ' activates that agent. Use plain names when not summoning.';
+    const rows = getAgentPromptRows();
+    if (!rows.length) {
+      renderAgentPromptBar(lastPreviewData);
+    } else {
+      rows.forEach((el) => {
+        const row = el.closest('.agent-prompt-row');
+        const id = row ? [...row.classList].find((c) => AGENT_IDS.includes(c)) : null;
+        if (id && latestAgents[id]) {
+          el.textContent = '@' + (latestAgents[id].alias || id);
+        }
+      });
+    }
   }
 
   function optionList(options, current) {
@@ -2521,7 +2588,7 @@
       option.textContent = label;
       select.appendChild(option);
     }
-    select.value = value || (agentId === 'claude' ? 'claude_cli' : agentId === 'codex' ? 'codex_cli' : agentId === 'hermes' ? 'hermes_api' : 'opencode');
+    select.value = value || (agentId === 'claude' ? 'claude_cli' : agentId === 'codex' ? 'codex_cli' : agentId === 'deepseek' ? 'opencode' : agentId === 'hermes' ? 'hermes_api' : 'hermes_api');
     select.addEventListener('change', () => {
       patchConfig({ providers: { [agentId]: select.value } });
     });
@@ -2753,8 +2820,72 @@
       row.appendChild(colorWrap);
       row.appendChild(keyWrap);
       row.appendChild(roleWrap);
+
+      if (info.removable) {
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'config-panel-btn config-remove-agent-btn';
+        removeBtn.textContent = 'Remove';
+        removeBtn.title = `Remove ${info.label || id} from this session`;
+        removeBtn.addEventListener('click', () => {
+          if (confirm(`Remove @${info.alias || id} from this session?`)) {
+            fetch(sessionApi(`/agents/${encodeURIComponent(id)}`), { method: 'DELETE' })
+              .then(r => r.json())
+              .then(d => {
+                if (d.ok) {
+                  latestAgents = d.agents || {};
+                  const dynIds = Object.keys(latestAgents).filter(k => k !== '_ui' && k !== 'you');
+                  if (dynIds.length) AGENT_IDS = dynIds;
+                  renderConfig(latestAgents, latestDispatch || {});
+                  renderAgentCards(latestAgents, null);
+                }
+              })
+              .catch(() => {});
+          }
+        });
+        row.appendChild(removeBtn);
+      }
+
       agentRows.push(row);
     }
+
+    const addAgentRow = document.createElement('div');
+    addAgentRow.className = 'config-row config-add-agent-row';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'config-panel-btn';
+    addBtn.textContent = '+ Add Agent';
+    addBtn.title = 'Add a new AI agent slot to this session';
+    addBtn.addEventListener('click', () => {
+      const name = prompt('Enter agent name (lowercase, letters/digits/hyphens):');
+      if (!name) return;
+      const clean = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      if (!clean || !/^[a-z]/.test(clean)) {
+        alert('Agent name must start with a letter and use only lowercase letters, digits, hyphens, or underscores.');
+        return;
+      }
+      fetch(sessionApi('/agents'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: clean, provider: 'hermes_api' }),
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (d.ok) {
+            latestAgents = d.agents || {};
+            const dynIds = Object.keys(latestAgents).filter(k => k !== '_ui' && k !== 'you');
+            if (dynIds.length) AGENT_IDS = dynIds;
+            renderConfig(latestAgents, latestDispatch || {});
+            renderAgentCards(latestAgents, null);
+          } else {
+            alert(d.detail || 'Failed to add agent.');
+          }
+        })
+        .catch(err => alert('Error: ' + err.message));
+    });
+    addAgentRow.appendChild(addBtn);
+    agentRows.push(addAgentRow);
+
     configGrid.appendChild(makeCollapsibleSection('Agents', agentRows));
 
     const flashInfo = agents.deepseek || {};
@@ -3266,16 +3397,20 @@
   globalConfigCheckbox.addEventListener('change', () => {
     renderConfig(globalConfigCheckbox.checked ? latestGlobalAgents : latestAgents, globalConfigCheckbox.checked ? latestGlobalDispatch : latestDispatch);
   });
-  agentButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const info = latestAgents[btn.dataset.agent] || {};
-      const mention = '@' + (info.alias || btn.dataset.agent);
-      const text = msgInput.value.trim();
-      replaceComposerRange(0, msgInput.value.length, text ? `${mention} ${text}` : `${mention} `);
-      msgInput.focus();
-      msgInput.setSelectionRange(msgInput.value.length, msgInput.value.length);
-      refreshComposer();
-    });
+  agentPromptBarEl.addEventListener('click', (e) => {
+    const nameEl = e.target.closest('.agent-prompt-name');
+    if (!nameEl) return;
+    const row = nameEl.closest('.agent-prompt-row');
+    if (!row) return;
+    const id = [...row.classList].find((c) => AGENT_IDS.includes(c));
+    if (!id) return;
+    const info = latestAgents[id] || {};
+    const mention = '@' + (info.alias || id);
+    const text = msgInput.value.trim();
+    replaceComposerRange(0, msgInput.value.length, text ? `${mention} ${text}` : `${mention} `);
+    msgInput.focus();
+    msgInput.setSelectionRange(msgInput.value.length, msgInput.value.length);
+    refreshComposer();
   });
 
   newSessionBtn.addEventListener('click', () => {

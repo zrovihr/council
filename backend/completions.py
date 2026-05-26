@@ -36,9 +36,10 @@ DEFERRED_DIRS = {
 _cache: dict[str, tuple[float, list[str]]] = {}
 
 
-def list_agents(aliases: dict | None = None) -> list[str]:
+def list_agents(aliases: dict | None = None, agents: list[str] | None = None) -> list[str]:
+    agent_list = agents or list(AGENTS)
     result = []
-    for agent in AGENTS:
+    for agent in agent_list:
         alias = str((aliases or {}).get(agent) or agent).strip().lstrip("@")
         result.append(alias or agent)
     return result

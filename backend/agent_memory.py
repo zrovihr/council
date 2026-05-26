@@ -61,9 +61,10 @@ def agent_memory_root(session_dir: Path) -> Path:
     return session_dir / "agent-memory"
 
 
-def ensure_agent_memory_dirs(session_dir: Path) -> None:
+def ensure_agent_memory_dirs(session_dir: Path, agents: list[str] | None = None) -> None:
     root = agent_memory_root(session_dir)
-    for agent in AGENTS:
+    agent_list = agents or list(AGENTS)
+    for agent in agent_list:
         (root / agent / "artifacts").mkdir(parents=True, exist_ok=True)
         runs_path = root / agent / "runs.jsonl"
         runs_path.touch(exist_ok=True)
@@ -80,8 +81,9 @@ def _relative_ui_path(path: Path, root: Path) -> str:
     return str(path.relative_to(root)).replace("\\", "/")
 
 
-def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS) -> str:
-    if agent not in AGENTS:
+def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS, agents: list[str] | None = None) -> str:
+    agent_list = agents or list(AGENTS)
+    if agent not in agent_list:
         return ""
     current_path = agent_memory_root(session_dir) / agent / "current.md"
     if not current_path.exists():
@@ -90,14 +92,15 @@ def read_agent_memory(session_dir: Path, agent: str, max_chars: int = MAX_CURREN
     return _tail(text, max_chars)
 
 
-def read_agent_memory_for_ui(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS) -> dict:
+def read_agent_memory_for_ui(session_dir: Path, agent: str, max_chars: int = MAX_CURRENT_CHARS, agents: list[str] | None = None) -> dict:
     """Return the agent's current private memory as local UI data.
 
     Unlike read_agent_memory(), this keeps the file body as written so the user can
     inspect what Council actually persisted. It is only exposed through the local
     session API, not inserted into other agents' prompts.
     """
-    if agent not in AGENTS:
+    agent_list = agents or list(AGENTS)
+    if agent not in agent_list:
         return {"exists": False, "path": "", "text": ""}
     current_path = agent_memory_root(session_dir) / agent / "current.md"
     if not current_path.exists():
@@ -124,8 +127,10 @@ def write_agent_memory(
     error: str = "",
     usage: dict[str, int] | None = None,
     project_root: Path | None = None,
+    agents: list[str] | None = None,
 ) -> Path | None:
-    if agent not in AGENTS:
+    agent_list = agents or list(AGENTS)
+    if agent not in agent_list:
         return None
 
     ensure_agent_memory_dirs(session_dir)

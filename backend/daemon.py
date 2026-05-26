@@ -12,6 +12,7 @@ from .state import (
     AGENTS,
     Session,
     SessionRegistry,
+    _active_agents,
     infer_provider_for_model,
     runtime_family_for_provider,
 )
@@ -78,17 +79,18 @@ def _get_runtime_model(config: dict, agent: str) -> str:
     return _get_model(config, agent)
 
 
-def _get_hermes_config(config: dict) -> dict[str, str]:
+def _get_hermes_config(config: dict, agent: str = "hermes") -> dict[str, str]:
     dispatch = config.get("dispatch", {}) or {}
     hermes = dispatch.get("hermes", {}) if isinstance(dispatch.get("hermes"), dict) else {}
+    agent_dispatch = dispatch.get(agent, {}) if isinstance(dispatch.get(agent), dict) else {}
     session_header = (
-        hermes.get("session_header")
-        if "session_header" in hermes
-        else "X-Hermes-Session-Key"
+        agent_dispatch.get("session_header")
+        or hermes.get("session_header")
+        or "X-Hermes-Session-Key"
     )
     return {
-        "base_url": str(hermes.get("base_url") or "http://127.0.0.1:8642/v1"),
-        "session_key": str(hermes.get("session_key") or ""),
+        "base_url": str(agent_dispatch.get("base_url") or hermes.get("base_url") or "http://127.0.0.1:8642/v1"),
+        "session_key": str(agent_dispatch.get("session_key") or hermes.get("session_key") or ""),
         "session_header": str(session_header or ""),
     }
 
@@ -115,6 +117,10 @@ def _agent_env(config: dict, agent: str) -> dict[str, str]:
         key = api_keys.get(agent) or api_keys.get("deepseek")
         if key:
             env["OPENCODE_DEEPSEEK_API_KEY"] = str(key)
+    if provider == "hermes_api":
+        key = api_keys.get(agent)
+        if key:
+            env["COUNCIL_HERMES_API_KEY"] = str(key)
     if provider:
         env["COUNCIL_AGENT_PROVIDER"] = provider
     return env
@@ -215,17 +221,18 @@ def _save_dispatch_ledger(path: Path, dispatched: set[str]) -> None:
     )
 
 
-def _turn_mentions(turn: dict, aliases: dict | None = None) -> list[str]:
+def _turn_mentions(turn: dict, aliases: dict | None = None, agents: list[str] | None = None) -> list[str]:
     author = turn["author"]
-    if author == "you" or author in AGENTS:
-        return find_agent_mentions(turn["body"], aliases)
+    agent_list = agents or list(AGENTS)
+    if author == "you" or author in agent_list:
+        return find_agent_mentions(turn["body"], aliases, agents=agent_list)
     return []
 
 
-def _chained_mentions(author: str, body: str, aliases: dict | None = None) -> list[str]:
+def _chained_mentions(author: str, body: str, aliases: dict | None = None, agents: list[str] | None = None) -> list[str]:
     return [
         mention
-        for mention in _turn_mentions({"author": author, "body": body}, aliases)
+        for mention in _turn_mentions({"author": author, "body": body}, aliases, agents=agents)
         if mention != author
     ]
 
@@ -234,6 +241,7 @@ def _request_still_valid(
     chat_path: Path,
     request: dict[str, str],
     aliases: dict | None = None,
+    agents: list[str] | None = None,
 ) -> bool:
     if not chat_path.exists():
         return False
@@ -243,6 +251,7 @@ def _request_still_valid(
     if not turns:
         return False
 
+    agent_list = agents or list(AGENTS)
     source = request["source"]
     for turn in turns:
         if turn["header"] != request["header"]:
@@ -250,9 +259,9 @@ def _request_still_valid(
         author = turn["author"]
         if source == "user" and author != "you":
             continue
-        if source == "agent" and author not in AGENTS:
+        if source == "agent" and author not in agent_list:
             continue
-        return request["agent"] in _turn_mentions(turn, aliases)
+        return request["agent"] in _turn_mentions(turn, aliases, agents=agent_list)
     return False
 
 
@@ -260,11 +269,13 @@ def _seed_dispatch_ledger(
     turns: list[dict],
     dispatched_mentions: set[str],
     aliases: dict | None = None,
+    agents: list[str] | None = None,
 ) -> bool:
+    agent_list = agents or list(AGENTS)
     changed = False
     for i, turn in enumerate(turns):
-        for agent in _turn_mentions(turn, aliases):
-            if turn["author"] == "you" and not _has_later_response(turns, i):
+        for agent in _turn_mentions(turn, aliases, agents=agent_list):
+            if turn["author"] == "you" and not _has_later_response(turns, i, agents=agent_list):
                 continue
             key = _mention_key(turn["header"], agent)
             if key not in dispatched_mentions:
@@ -273,9 +284,10 @@ def _seed_dispatch_ledger(
     return changed
 
 
-def _has_later_response(turns: list[dict], turn_index: int) -> bool:
+def _has_later_response(turns: list[dict], turn_index: int, agents: list[str] | None = None) -> bool:
+    agent_list = agents or list(AGENTS)
     for later in turns[turn_index + 1:]:
-        if later["author"] in (*AGENTS, "system"):
+        if later["author"] in (*agent_list, "system"):
             return True
     return False
 
@@ -284,12 +296,14 @@ def _prune_unresolved_user_mentions(
     turns: list[dict],
     dispatched_mentions: set[str],
     aliases: dict | None = None,
+    agents: list[str] | None = None,
 ) -> bool:
+    agent_list = agents or list(AGENTS)
     changed = False
     for i, turn in enumerate(turns):
-        if turn["author"] != "you" or _has_later_response(turns, i):
+        if turn["author"] != "you" or _has_later_response(turns, i, agents=agent_list):
             continue
-        for agent in _turn_mentions(turn, aliases):
+        for agent in _turn_mentions(turn, aliases, agents=agent_list):
             key = _mention_key(turn["header"], agent)
             if key in dispatched_mentions:
                 dispatched_mentions.remove(key)
@@ -317,14 +331,16 @@ def _initial_processed_header(
     turns: list[dict],
     dispatched_mentions: set[str],
     aliases: dict | None = None,
+    agents: list[str] | None = None,
 ) -> str:
+    agent_list = agents or list(AGENTS)
     for i in range(len(turns) - 1, -1, -1):
         turn = turns[i]
-        if turn["author"] != "you" or _has_later_response(turns, i):
+        if turn["author"] != "you" or _has_later_response(turns, i, agents=agent_list):
             continue
         if any(
             _mention_key(turn["header"], agent) not in dispatched_mentions
-            for agent in _turn_mentions(turn, aliases)
+            for agent in _turn_mentions(turn, aliases, agents=agent_list)
         ):
             return turns[i - 1]["header"] if i > 0 else ""
     return turns[-1]["header"] if turns else ""
@@ -413,12 +429,13 @@ def _agent_prompt_profile(config: dict, agent: str, runtime_family: str) -> dict
     return profile
 
 
-def _merge_alias_snapshots(*snapshots: dict | None) -> dict[str, list[str]]:
+def _merge_alias_snapshots(*snapshots: dict | None, agents: list[str] | None = None) -> dict[str, list[str]]:
+    agent_list = agents or list(AGENTS)
     merged: dict[str, list[str]] = {}
     for snapshot in snapshots:
         if not isinstance(snapshot, dict):
             continue
-        for agent in AGENTS:
+        for agent in agent_list:
             alias = str(snapshot.get(agent) or "").strip().lstrip("@").lower()
             if alias and alias not in merged.setdefault(agent, []):
                 merged[agent].append(alias)
@@ -455,6 +472,7 @@ def _display_path(path: Path | None, root: Path | None) -> str:
 
 async def session_daemon_loop(session: Session, registry: SessionRegistry):
     chat_path = session.chat_path
+    session_agents = session._session_agents()
 
     dispatch_ledger_path = session.session_dir / "dispatch-ledger.json"
     dispatched_mentions = _load_dispatch_ledger(dispatch_ledger_path)
@@ -464,9 +482,9 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         text = chat_path.read_text(encoding="utf-8", errors="replace")
         existing_turns = _parse_turns(text)
         changed = False
-        if _prune_unresolved_user_mentions(existing_turns, dispatched_mentions, startup_aliases):
+        if _prune_unresolved_user_mentions(existing_turns, dispatched_mentions, startup_aliases, agents=session_agents):
             changed = True
-        if not dispatched_mentions and _seed_dispatch_ledger(existing_turns, dispatched_mentions, startup_aliases):
+        if not dispatched_mentions and _seed_dispatch_ledger(existing_turns, dispatched_mentions, startup_aliases, agents=session_agents):
             changed = True
         if changed:
             _save_dispatch_ledger(dispatch_ledger_path, dispatched_mentions)
@@ -474,6 +492,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         existing_turns,
         dispatched_mentions,
         session.effective_config().get("aliases", {}),
+        agents=session_agents,
     )
     pending_mentions = session.dispatch_queue
     pending_changed = asyncio.Condition()
@@ -553,9 +572,11 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
 
     async def watcher():
         nonlocal last_processed_header
+        nonlocal session_agents
         while True:
             try:
                 await launch_promoted_mentions()
+                session_agents = session._session_agents()
                 if chat_path.exists():
                     text = chat_path.read_text(encoding="utf-8", errors="replace")
                     turns = _parse_turns(text)
@@ -568,7 +589,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     if last_processed_header:
                         header_idx = _find_header_index(turns, last_processed_header)
                         if header_idx is None:
-                            if _seed_dispatch_ledger(turns, dispatched_mentions, aliases):
+                            if _seed_dispatch_ledger(turns, dispatched_mentions, aliases, agents=session_agents):
                                 _save_dispatch_ledger(
                                     dispatch_ledger_path,
                                     dispatched_mentions,
@@ -589,10 +610,10 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         source = None
                         if author == "you":
                             source = "user"
-                        elif author in AGENTS:
+                        elif author in session_agents:
                             source = "agent"
                         if source:
-                            for mention in _turn_mentions(turn, aliases):
+                            for mention in _turn_mentions(turn, aliases, agents=session_agents):
                                 if source == "agent" and author == mention:
                                     continue
                                 mode = dispatch_modes.get(turn["header"], "parallel")
@@ -617,8 +638,8 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
         nonlocal last_processed_header
         nonlocal consecutive_agent_dispatches
         config = session.effective_config()
-        aliases = _merge_alias_snapshots(config.get("aliases", {}), request.get("aliases"))
-        if not _request_still_valid(chat_path, request, aliases):
+        aliases = _merge_alias_snapshots(config.get("aliases", {}), request.get("aliases"), agents=session_agents)
+        if not _request_still_valid(chat_path, request, aliases, agents=session_agents):
             await session.add_trace(
                 request.get("agent") or "system",
                 "dispatch skipped",
@@ -691,6 +712,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 project_rules_max_chars=prompt_profile["project_rules_max_chars"],
                 compaction_summary_max_chars=prompt_profile["compaction_summary_max_chars"],
                 council_context_hint=runtime_family == "hermes",
+                agents=session_agents,
             )
             binary = _get_binary(config, mention)
             model = _get_runtime_model(config, mention)
@@ -762,7 +784,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 await update_running_preview(source, text)
 
             async def run_dispatch() -> DispatchResult:
-                if runtime_family == "claude":
+                if runtime_family == "claude" or provider == "claude_cli":
                     return await dispatch_claude(
                         prompt, working_root,
                         _agent_timeout(config, mention),
@@ -770,7 +792,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         on_output=trace_agent_output,
                         env=agent_env,
                     )
-                if runtime_family == "codex":
+                if runtime_family == "codex" or provider == "codex_cli":
                     return await dispatch_codex(
                         prompt, working_root,
                         _agent_timeout(config, mention),
@@ -778,16 +800,16 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         on_output=trace_agent_output,
                         env=agent_env,
                     )
-                if runtime_family == "deepseek":
+                if runtime_family == "deepseek" or provider == "opencode":
                     async def trace_opencode_output(source: str, text: str):
                         captured_output_parts.append(f"[opencode {source}]\n{text}")
                         dispatch_trace_events.append({
-                            "agent": "deepseek",
+                            "agent": mention,
                             "message": f"opencode {source}",
                             "detail": text,
                         })
                         await session.add_trace(
-                            "deepseek",
+                            mention,
                             f"opencode {source}",
                             text,
                         )
@@ -801,13 +823,13 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                         on_output=trace_opencode_output,
                         env=agent_env,
                     )
-                if runtime_family == "hermes":
-                    hermes_cfg = _get_hermes_config(config)
+                if runtime_family == "hermes" or provider == "hermes_api" or mention not in AGENTS:
+                    hermes_cfg = _get_hermes_config(config, mention)
                     return await dispatch_hermes(
                         prompt,
                         working_root,
                         _agent_timeout(config, mention),
-                        model=model or "hermes-agent",
+                        model=model or mention,
                         base_url=hermes_cfg["base_url"],
                         api_key=_api_key_for(config, mention),
                         session_key=hermes_cfg["session_key"],
@@ -840,6 +862,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 captured_output="\n\n".join(captured_output_parts),
                 usage=result.usage,
                 project_root=session.project_root,
+                agents=session_agents,
             )
             await session.add_trace(
                 mention,
@@ -877,6 +900,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 response_aliases = _merge_alias_snapshots(
                     session.effective_config().get("aliases", {}),
                     request.get("aliases"),
+                    agents=session_agents,
                 )
                 for chained_mention in _chained_mentions(
                     mention,
@@ -928,6 +952,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 captured_output="\n\n".join(captured_output_parts),
                 error="Stopped by user.",
                 project_root=session.project_root,
+                agents=session_agents,
             )
             await session.add_trace(mention, "dispatch cancelled", "Stopped by user.")
             if reserved_turn:
@@ -955,6 +980,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                 captured_output="\n\n".join(captured_output_parts),
                 error=str(e),
                 project_root=session.project_root,
+                agents=session_agents,
             )
             await session.add_trace(mention, "dispatch failed", str(e))
             safe_reason = neutralize_agent_mentions(str(e)).strip()

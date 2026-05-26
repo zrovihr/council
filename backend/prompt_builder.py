@@ -32,12 +32,14 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
                  project_rules_max_chars: int | None = None,
                  compaction_summary_max_chars: int | None = None,
                  council_context_hint: bool = False,
-                 _return_breakdown: bool = False) -> str | dict:
+                 _return_breakdown: bool = False,
+                 agents: list[str] | None = None) -> str | dict:
     aliases = aliases or {}
+    agent_list = agents or list(AGENTS)
     attachment_policy = _normalize_attachment_policy(target_agent, attachment_policy)
     mention_names = {
         agent: str(aliases.get(agent) or agent).strip().lstrip("@")
-        for agent in AGENTS
+        for agent in agent_list
     }
     user_alias = str(aliases.get("you") or "you").strip().lstrip("@") or "you"
     mention_list = " / ".join(f"@{name}" for name in mention_names.values())
@@ -152,7 +154,7 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         ),
     )
     if pinned_summary:
-        pinned_summary = _rewrite_prompt_aliases(pinned_summary, aliases)
+        pinned_summary = _rewrite_prompt_aliases(pinned_summary, aliases, agents=agent_list)
         clauses.append(
             "=== SHARED COMPACTED CONTEXT (authoritative) ===\n"
             "This is shared Council context from the latest compaction. Treat "
@@ -189,7 +191,7 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         else ""
     )
     if recent_actions:
-        recent_actions = _rewrite_prompt_aliases(recent_actions, aliases)
+        recent_actions = _rewrite_prompt_aliases(recent_actions, aliases, agents=agent_list)
         clauses.append(
             "=== RECENT AGENT TOOL ACTIVITY ===\n"
             "Compact provenance from agent turns since the latest user message. "
@@ -204,7 +206,7 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         _read_chat_tail(chat_md_path, chat_budget, min_turns=min_chat_tail_turns),
         attachment_policy,
     )
-    chat_tail = _rewrite_prompt_aliases(chat_tail, aliases)
+    chat_tail = _rewrite_prompt_aliases(chat_tail, aliases, agents=agent_list)
     clauses.append(
         "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
     )
@@ -219,7 +221,7 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
             max(1000, len(chat_tail) - overflow - 200),
             min_turns=min_chat_tail_turns,
         )
-        chat_tail = _rewrite_prompt_aliases(chat_tail, aliases)
+        chat_tail = _rewrite_prompt_aliases(chat_tail, aliases, agents=agent_list)
         clauses[-2] = "=== CHAT TAIL (last portion of conversation) ===\n" + chat_tail
         prompt = "\n".join(clauses)
     if _return_breakdown:
@@ -227,13 +229,14 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
     return prompt
 
 
-def _rewrite_prompt_aliases(text: str, aliases: dict | None = None) -> str:
+def _rewrite_prompt_aliases(text: str, aliases: dict | None = None, agents: list[str] | None = None) -> str:
     """Present chat history with configured aliases without changing stored IDs."""
     if not text or not isinstance(aliases, dict):
         return text
 
+    canonicals = (agents or list(AGENTS)) + ["you"]
     replacements: dict[str, str] = {}
-    for canonical in PROMPT_ALIAS_CANONICALS:
+    for canonical in canonicals:
         alias = str(aliases.get(canonical) or canonical).strip().lstrip("@")
         if alias and alias != canonical:
             replacements[canonical] = alias
@@ -299,7 +302,7 @@ def _prompt_context_metadata(session_dir: Path | None) -> tuple[int, str]:
         if event.get("kind") in ("user_turn", "agent_turn", "system_turn"):
             turn_count += 1
             author = event.get("author")
-            if author in AGENTS:
+            if author and author != "you":
                 speakers.add(str(author))
     return turn_count, ", ".join(sorted(speakers))
 

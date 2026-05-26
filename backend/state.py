@@ -34,6 +34,11 @@ DEFAULT_UI_COLORS = {
     "system": "#6b7280",
     "primary": "#00ff41",
 }
+AGENT_COLORS = [
+    "#7dd3fc", "#c4b5fd", "#fdba74", "#86efac",
+    "#fca5a5", "#a5b4fc", "#fde047", "#5eead4",
+    "#d8b4fe", "#f0abfc", "#67e8f9", "#fb923c",
+]
 
 
 def utc_now() -> str:
@@ -175,6 +180,16 @@ def redact_config(config: dict) -> dict:
     return redacted
 
 
+def _active_agents(config: dict, session_state: dict | None = None) -> list[str]:
+    effective = overlay_config(config, session_state)
+    agents_list = effective.get("agents")
+    if isinstance(agents_list, list):
+        result = [str(a).strip().lower() for a in agents_list if str(a).strip()]
+        if result:
+            return result
+    return list(AGENTS)
+
+
 def _provider_for(providers: dict, agent: str) -> str:
     defaults = {
         "claude": "claude_cli",
@@ -182,7 +197,7 @@ def _provider_for(providers: dict, agent: str) -> str:
         "deepseek": "opencode",
         "hermes": "hermes_api",
     }
-    return str(providers.get(agent) or defaults.get(agent) or "custom")
+    return str(providers.get(agent) or defaults.get(agent) or "hermes_api")
 
 
 def infer_provider_for_model(agent: str, provider: str, model: str) -> str:
@@ -214,8 +229,10 @@ def runtime_family_for_provider(provider: str, agent: str = "") -> str:
     if provider == "opencode":
         return "deepseek"
     if provider == "hermes_api":
-        return "hermes"
+        return agent if agent and agent not in AGENTS else "hermes"
     if agent in AGENTS:
+        return agent
+    if agent:
         return agent
     return "system"
 
@@ -230,8 +247,52 @@ def _key_saved(api_keys: dict, agent: str, provider: str) -> bool:
     return False
 
 
-def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
-    effective = overlay_config(config, session_state)
+def _color_for_agent(agent: str, index: int, ui_colors: dict) -> str:
+    if agent in ui_colors:
+        return str(ui_colors[agent])
+    if agent in DEFAULT_UI_COLORS:
+        return DEFAULT_UI_COLORS[agent]
+    return AGENT_COLORS[index % len(AGENT_COLORS)]
+
+
+def _agent_note(agent: str) -> str | None:
+    notes = {
+        "claude": "Uses the Claude CLI default model unless configured there.",
+        "codex": "Uses the Codex CLI default model unless configured there.",
+        "deepseek": "Configured in Council config.toml or this session.",
+        "hermes": "Routes through Hermes api_server, usually http://localhost:8642/v1.",
+    }
+    return notes.get(agent)
+
+
+def _agent_runtime_label(provider: str) -> str:
+    return {
+        "claude_cli": "claude CLI",
+        "codex_cli": "codex exec",
+        "opencode": "opencode run",
+        "hermes_api": "HTTP API",
+    }.get(provider, provider)
+
+
+def _agent_binary(agent: str, resolved_provider: str, binaries: dict, models: dict) -> str:
+    if resolved_provider == "claude_cli":
+        return binaries.get("claude") or "claude"
+    if resolved_provider == "codex_cli":
+        return binaries.get("codex") or "codex"
+    if resolved_provider == "opencode":
+        return binaries.get("opencode") or "opencode"
+    return ""
+
+
+def _agent_model(agent: str, resolved_provider: str, models: dict) -> str:
+    if agent == "deepseek":
+        model = models.get("deepseek_pro", "")
+        if model:
+            return model
+    return models.get(agent, "")
+
+
+def _default_agent_info(agent: str, config: dict, effective: dict, index: int) -> dict:
     models = effective.get("models", {})
     binaries = effective.get("binaries", {})
     efforts = effective.get("effort", {})
@@ -242,19 +303,48 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
     ui_colors = (effective.get("ui") or {}).get("colors") or {}
     model_options = effective.get("model_options", {})
     effort_options = effective.get("effort_options", {})
-    claude_provider = infer_provider_for_model(
-        "claude", _provider_for(providers, "claude"), models.get("claude", "")
-    )
-    codex_provider = infer_provider_for_model(
-        "codex", _provider_for(providers, "codex"), models.get("codex", "")
-    )
-    deepseek_provider = infer_provider_for_model(
-        "deepseek", _provider_for(providers, "deepseek"), models.get("deepseek_pro", "")
-    )
-    hermes_provider = infer_provider_for_model(
-        "hermes", _provider_for(providers, "hermes"), models.get("hermes", "")
-    )
-    return {
+
+    configured_provider = _provider_for(providers, agent)
+    model = _agent_model(agent, configured_provider, models)
+    resolved_provider = infer_provider_for_model(agent, configured_provider, model)
+    family = runtime_family_for_provider(resolved_provider, agent)
+
+    info: dict = {
+        "label": agent[0].upper() + agent[1:] if agent else agent,
+        "runtime": _agent_runtime_label(resolved_provider),
+        "provider": resolved_provider,
+        "configured_provider": configured_provider,
+        "runtime_family": family,
+        "alias": str(aliases.get(agent) or agent),
+        "binary": _agent_binary(agent, resolved_provider, binaries, models),
+        "model": model,
+        "effort": efforts.get(agent, ""),
+        "role": roles.get(agent, ""),
+        "model_options": model_options.get(agent, []),
+        "effort_options": effort_options.get(agent, []),
+        "api_key_saved": _key_saved(api_keys, agent, resolved_provider),
+        "color": _color_for_agent(agent, index, ui_colors),
+        "removable": agent not in AGENTS,
+    }
+
+    note = _agent_note(agent)
+    if note:
+        info["note"] = note
+
+    if agent == "deepseek":
+        info["flash_model"] = models.get("deepseek_flash", "deepseek/deepseek-v4-flash")
+        info["flash_key_saved"] = bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek"))
+
+    return info
+
+
+def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
+    effective = overlay_config(config, session_state)
+    agents = _active_agents(config, session_state)
+    ui_colors = (effective.get("ui") or {}).get("colors") or {}
+    aliases = effective.get("aliases", {})
+
+    result = {
         "_ui": {
             "primary": str(ui_colors.get("primary") or DEFAULT_UI_COLORS["primary"]),
         },
@@ -264,77 +354,12 @@ def build_agent_info(config: dict, session_state: dict | None = None) -> dict:
             "runtime_family": "you",
             "color": str(ui_colors.get("you") or DEFAULT_UI_COLORS["you"]),
         },
-        "claude": {
-            "label": "Claude",
-            "runtime": "claude CLI",
-            "provider": claude_provider,
-            "configured_provider": _provider_for(providers, "claude"),
-            "runtime_family": runtime_family_for_provider(claude_provider, "claude"),
-            "alias": str(aliases.get("claude") or "claude"),
-            "binary": binaries.get("claude") or models.get("claude") or "claude",
-            "model": models.get("claude", ""),
-            "effort": efforts.get("claude", ""),
-            "role": roles.get("claude", ""),
-            "model_options": model_options.get("claude", []),
-            "effort_options": effort_options.get("claude", []),
-            "api_key_saved": _key_saved(api_keys, "claude", claude_provider),
-            "color": str(ui_colors.get("claude") or DEFAULT_UI_COLORS["claude"]),
-            "note": "Uses the Claude CLI default model unless configured there.",
-        },
-        "codex": {
-            "label": "Codex",
-            "runtime": "codex exec",
-            "provider": codex_provider,
-            "configured_provider": _provider_for(providers, "codex"),
-            "runtime_family": runtime_family_for_provider(codex_provider, "codex"),
-            "alias": str(aliases.get("codex") or "codex"),
-            "binary": binaries.get("codex") or models.get("codex") or "codex",
-            "model": models.get("codex", ""),
-            "effort": efforts.get("codex", ""),
-            "role": roles.get("codex", ""),
-            "model_options": model_options.get("codex", []),
-            "effort_options": effort_options.get("codex", []),
-            "api_key_saved": _key_saved(api_keys, "codex", codex_provider),
-            "color": str(ui_colors.get("codex") or DEFAULT_UI_COLORS["codex"]),
-            "note": "Uses the Codex CLI default model unless configured there.",
-        },
-        "deepseek": {
-            "label": "Deepseek",
-            "runtime": "opencode run",
-            "provider": deepseek_provider,
-            "configured_provider": _provider_for(providers, "deepseek"),
-            "runtime_family": runtime_family_for_provider(deepseek_provider, "deepseek"),
-            "alias": str(aliases.get("deepseek") or "deepseek"),
-            "binary": binaries.get("opencode") or models.get("opencode") or "opencode",
-            "model": models.get("deepseek_pro", "deepseek/deepseek-v4-pro"),
-            "effort": efforts.get("deepseek", ""),
-            "role": roles.get("deepseek", ""),
-            "model_options": model_options.get("deepseek", []),
-            "effort_options": effort_options.get("deepseek", []),
-            "api_key_saved": _key_saved(api_keys, "deepseek", deepseek_provider),
-            "color": str(ui_colors.get("deepseek") or DEFAULT_UI_COLORS["deepseek"]),
-            "flash_model": models.get("deepseek_flash", "deepseek/deepseek-v4-flash"),
-            "flash_key_saved": bool(api_keys.get("deepseek_flash") or api_keys.get("deepseek")),
-            "note": "Configured in Council config.toml or this session.",
-        },
-        "hermes": {
-            "label": "Hermes",
-            "runtime": "Hermes API",
-            "provider": hermes_provider,
-            "configured_provider": _provider_for(providers, "hermes"),
-            "runtime_family": runtime_family_for_provider(hermes_provider, "hermes"),
-            "alias": str(aliases.get("hermes") or "hermes"),
-            "binary": "",
-            "model": models.get("hermes", "hermes-agent"),
-            "effort": efforts.get("hermes", ""),
-            "role": roles.get("hermes", ""),
-            "model_options": model_options.get("hermes", []),
-            "effort_options": effort_options.get("hermes", []),
-            "api_key_saved": _key_saved(api_keys, "hermes", hermes_provider),
-            "color": str(ui_colors.get("hermes") or DEFAULT_UI_COLORS["hermes"]),
-            "note": "Routes through Hermes api_server, usually http://localhost:8642/v1.",
-        },
     }
+
+    for idx, agent in enumerate(agents):
+        result[agent] = _default_agent_info(agent, config, effective, idx)
+
+    return result
 
 
 def render_turn(author: str, text: str, timestamp: str | None = None) -> str:
@@ -549,20 +574,9 @@ def load_global_log(path: Path, limit: int = 200) -> list[dict]:
 
 
 def token_totals_from_events(events_path: Path, start_line: int = 0,
-                             per_agent_start: dict | None = None) -> dict:
-    totals = {
-        agent: {
-            "prompt_tokens_est": 0,
-            "response_tokens_est": 0,
-            "total_tokens_est": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "turns": 0,
-        }
-        for agent in AGENTS
-    }
-    totals["all"] = {
+                             per_agent_start: dict | None = None,
+                             known_agents: list[str] | None = None) -> dict:
+    _zero = lambda: {
         "prompt_tokens_est": 0,
         "response_tokens_est": 0,
         "total_tokens_est": 0,
@@ -571,6 +585,9 @@ def token_totals_from_events(events_path: Path, start_line: int = 0,
         "total_tokens": 0,
         "turns": 0,
     }
+    agents_list = known_agents or list(AGENTS)
+    totals: dict[str, dict] = {agent: _zero() for agent in agents_list}
+    totals["all"] = _zero()
     if not events_path.exists():
         return totals
     per_agent_start = per_agent_start or {}
@@ -586,8 +603,10 @@ def token_totals_from_events(events_path: Path, start_line: int = 0,
         if event.get("kind") != "agent_turn":
             continue
         author = event.get("author")
-        if author not in AGENTS:
+        if not author:
             continue
+        if author not in totals:
+            totals[author] = _zero()
         agent_start = per_agent_start.get(author, 0)
         if line_idx < agent_start:
             continue
@@ -649,6 +668,9 @@ class Session:
         if self.project_root is None:
             return "Pathless"
         return self.project_root.name or str(self.project_root)
+
+    def _session_agents(self) -> list[str]:
+        return _active_agents(self.config, self.state)
 
     def metadata(self) -> dict:
         return {
@@ -780,7 +802,7 @@ class Session:
     def ensure_files(self) -> None:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
-        for agent in AGENTS:
+        for agent in self._session_agents():
             (self.session_dir / "agent-memory" / agent / "artifacts").mkdir(
                 parents=True,
                 exist_ok=True,
@@ -855,7 +877,7 @@ class Session:
         archive_then_truncate(self.compactions_path, clear_archive_dir / "compactions.jsonl")
 
         memory_root = self.session_dir / "agent-memory"
-        for agent in AGENTS:
+        for agent in self._session_agents():
             agent_root = memory_root / agent
             archive_then_truncate(
                 agent_root / "current.md",
@@ -918,7 +940,7 @@ class Session:
         rebuild_chat_from_events(self.events_path, self.chat_path, self.compactions_path)
 
         memory_root = self.session_dir / "agent-memory"
-        for agent in AGENTS:
+        for agent in self._session_agents():
             agent_root = memory_root / agent
             current_path = agent_root / "current.md"
             if current_path.exists():
@@ -962,18 +984,20 @@ class Session:
     def token_totals(self) -> dict:
         per_agent_start = {}
         stats = self.state.get("stats") if isinstance(self.state, dict) else {}
+        agents = self._session_agents()
         if isinstance(stats, dict):
             agent_start = stats.get("agent_token_start_lines")
             if isinstance(agent_start, dict):
                 per_agent_start = {
                     a: max(0, int(agent_start.get(a) or 0))
-                    for a in AGENTS
+                    for a in agents
                 }
         global_start = self.token_stats_start_line()
         return token_totals_from_events(
             self.events_path,
             global_start,
             per_agent_start=per_agent_start or None,
+            known_agents=agents,
         )
 
     def reset_token_stats(self, agent: str | None = None) -> dict:
@@ -983,7 +1007,7 @@ class Session:
             stats = {}
             self.state["stats"] = stats
         now = utc_now()
-        if agent and agent in AGENTS:
+        if agent and agent in self._session_agents():
             per_agent = stats.setdefault("agent_token_start_lines", {})
             if not isinstance(per_agent, dict):
                 per_agent = {}
@@ -1359,6 +1383,8 @@ class Session:
         return False
 
     async def update_config(self, changes: dict) -> None:
+        active = self._session_agents()
+        alias_keys = (*active, "you")
         for section in STATE_SECTIONS:
             if section in SENSITIVE_SECTIONS:
                 continue
@@ -1385,10 +1411,10 @@ class Session:
                     target[key] = str(value)
                     continue
                 if section == "aliases":
-                    if key not in ALIAS_KEYS:
+                    if key not in alias_keys:
                         continue
                     alias = str(value).strip().lstrip("@")
-                    if key in AGENTS:
+                    if key in active:
                         alias = alias.lower()
                     target[key] = alias
                     continue
@@ -1400,10 +1426,10 @@ class Session:
                         colors = {}
                         target["colors"] = colors
                     for color_key, color_value in value.items():
-                        if color_key in COLOR_KEYS:
+                        if color_key in (*active, "you", "summarizer", "system", "primary"):
                             colors[color_key] = str(color_value).strip()
                     continue
-                if key not in AGENTS:
+                if key not in active:
                     continue
                 target[key] = str(value)
         self.save_state()

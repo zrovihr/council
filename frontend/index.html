@@ -58,22 +58,18 @@
     </main>
     <button id="new-msgs-btn" class="hidden">New messages &#8595;</button>
     <footer id="input-bar">
-      <div id="agent-buttons" aria-label="Agents">
-        <button class="agent-btn claude" type="button" data-agent="claude">@claude</button>
-        <button class="agent-btn codex" type="button" data-agent="codex">@codex</button>
-        <button class="agent-btn deepseek" type="button" data-agent="deepseek">@deepseek</button>
-        <button class="agent-btn hermes" type="button" data-agent="hermes">@hermes</button>
-      </div>
-      <div id="composer">
-        <div id="msg-editor">
-          <div id="msg-highlights" aria-hidden="true"></div>
-          <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek / @hermes activates that agent. Use @@ to reply to the last agent."></textarea>
+      <div id="agent-prompt-bar" aria-label="Agents and prompt cost"></div>
+      <div class="composer-row">
+        <div id="composer">
+          <div id="msg-editor">
+            <div id="msg-highlights" aria-hidden="true"></div>
+            <textarea id="msg-input" rows="3" placeholder="@claude / @codex / @deepseek / @hermes activates that agent. Use @@ to reply to the last agent."></textarea>
+          </div>
         </div>
-      </div>
-      <div id="prompt-preview" class="hidden"></div>
-      <div id="send-actions">
-        <button id="send-now-btn" title="Send and start mentioned agents immediately">Send</button>
-        <button id="send-btn" title="Queue (Ctrl+Enter)">Queue</button>
+        <div id="send-actions">
+          <button id="send-now-btn" title="Send and start mentioned agents immediately">Send</button>
+          <button id="send-btn" title="Queue (Ctrl+Enter)">Queue</button>
+        </div>
       </div>
     </footer>
   </section>

@@ -60,7 +60,7 @@ async def compact_chat(session: Session, config: dict) -> None:
     archive_dir = session.archive_dir
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / archive_name
-    summary = _clean_summary(await _summarize(full_text, config))
+    summary = _clean_summary(await _summarize(full_text, config, agents=session._session_agents()))
     summary = _append_recent_verbatim_turns(summary, full_text, config)
     post_compaction_turns = ""
     if chat_path.exists():
@@ -140,7 +140,7 @@ async def compact_agent_memories(
     max_run_bytes = int(compact_config.get("agent_runs_max_bytes", 100 * 1024))
     min_current_bytes = int(compact_config.get("agent_memory_min_bytes", 4 * 1024))
 
-    for agent in AGENTS:
+    for agent in session._session_agents():
         agent_root = session.session_dir / "agent-memory" / agent
         agent_root.mkdir(parents=True, exist_ok=True)
         result = {"agent": agent}
@@ -345,11 +345,12 @@ def _deepseek_env(config: dict) -> dict[str, str]:
     return env
 
 
-async def _summarize(full_text: str, config: dict) -> str:
+async def _summarize(full_text: str, config: dict, agents: list[str] | None = None) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    agent_list = agents or list(AGENTS)
     agent_lines = "\n".join(
         f"  - {a.title()}: <one sentence summarizing what {a.title()} did, or 'Did not participate'>"
-        for a in AGENTS
+        for a in agent_list
     )
     prompt = (
         "Summarize this chat transcript for an LLM that will continue the conversation. "

@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from starlette.websockets import WebSocketState
 
-from .state import AGENTS, Session, SessionRegistry, build_agent_info, rebuild_chat_from_events, runtime_family_for_provider
+from .state import AGENTS, Session, SessionRegistry, _active_agents, build_agent_info, rebuild_chat_from_events, runtime_family_for_provider
 from .daemon import session_daemon_loop
 from .summarizer import compact_chat
 from .completions import list_agents, list_project_files
@@ -86,9 +87,10 @@ def _get_session(registry: SessionRegistry, session_id: str) -> Session:
 
 
 def _turn_memory_snapshot(session: Session, author: str, max_chars: int = 20000) -> dict | None:
-    if author not in AGENTS:
+    agents = session._session_agents()
+    if author not in agents:
         return None
-    return read_agent_memory_for_ui(session.session_dir, author, max_chars=max_chars)
+    return read_agent_memory_for_ui(session.session_dir, author, max_chars=max_chars, agents=agents)
 
 
 def _allowed_config_changes(body: dict) -> dict:
@@ -206,8 +208,15 @@ def _active_dispatches_for_header(session: Session, header: str) -> list[dict]:
 
 
 def _last_agent_speaker(session: Session) -> str | None:
-    if not session.events_path.exists():
+    turns = _context_turns(session)
+    if not turns:
         return None
+    agents = session._session_agents()
+    for _, event in reversed(turns):
+        author = event.get("author")
+        if author in agents:
+            return str(author)
+    return None
     try:
         _, turns = _load_event_lines(session)
     except Exception:
@@ -259,11 +268,12 @@ def _context_turns(session: Session) -> list[tuple[int, dict]]:
     return turns
 
 
-def _context_agents(turns: list[tuple[int, dict]]) -> list[str]:
+def _context_agents(turns: list[tuple[int, dict]], session: Session | None = None) -> list[str]:
+    agents = session._session_agents() if session else list(AGENTS)
     return sorted({
         str(event.get("author"))
         for _, event in turns
-        if event.get("author") in AGENTS
+        if event.get("author") in agents
     })
 
 
@@ -277,7 +287,8 @@ def _format_context_turn(turn_number: int, event: dict) -> str:
 def _resolve_context_author(raw: str, session: Session) -> str:
     wanted = raw.strip().lstrip("@").lower()
     aliases = session.effective_config().get("aliases", {})
-    for canonical in (*AGENTS, "you"):
+    agents = session._session_agents()
+    for canonical in (*agents, "you"):
         alias = str(aliases.get(canonical) or canonical).strip().lstrip("@").lower()
         if wanted in {canonical, alias}:
             return canonical
@@ -368,7 +379,7 @@ def _slice_session_context(session: Session, raw_slice: str, max_chars: int) -> 
         "max_chars": max(1000, min(int(max_chars or CONTEXT_DEFAULT_CHARS), CONTEXT_MAX_CHARS)),
         "truncated": len(text) > len(clipped),
         "turn_count": len(turns),
-        "agents": _context_agents(turns),
+        "agents": _context_agents(turns, session=session),
         "text": clipped,
     }
 
@@ -897,6 +908,53 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         await registry.update_global_config(changes)
         return {"ok": True, "agents": build_agent_info(registry.config)}
 
+    @app.post("/api/sessions/{session_id}/agents")
+    async def add_agent(session_id: str, body: dict):
+        session = _get_session(registry, session_id)
+        agent_name = str(body.get("name") or "").strip().lower()
+        if not agent_name or not re.fullmatch(r"[a-z][a-z0-9_-]*", agent_name):
+            raise HTTPException(status_code=400, detail="Invalid agent name. Use lowercase letters, digits, hyphens, or underscores (must start with a letter).")
+        current_agents = session._session_agents()
+        if agent_name in current_agents:
+            raise HTTPException(status_code=409, detail=f"Agent '{agent_name}' already exists.")
+        agents_list = list(session.state.get("agents") or current_agents)
+        agents_list.append(agent_name)
+        session.state["agents"] = agents_list
+        provider = str(body.get("provider") or "hermes_api")
+        if provider:
+            providers = session.state.setdefault("providers", {})
+            providers[agent_name] = provider
+        model = str(body.get("model") or "")
+        if model:
+            models = session.state.setdefault("models", {})
+            models[agent_name] = model
+        session.save_state()
+        logger.info(
+            "Agent slot added",
+            f"session={session.name} ({session.id}) agent={agent_name} provider={provider}",
+        )
+        await session.broadcast_status()
+        return {"ok": True, "agents": build_agent_info(registry.config, session.state)}
+
+    @app.delete("/api/sessions/{session_id}/agents/{agent}")
+    async def remove_agent(session_id: str, agent: str):
+        session = _get_session(registry, session_id)
+        agent = agent.strip().lower()
+        if agent in AGENTS:
+            raise HTTPException(status_code=400, detail=f"Cannot remove built-in agent '{agent}'.")
+        current_agents = session._session_agents()
+        if agent not in current_agents:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent}' not found.")
+        agents_list = [a for a in current_agents if a != agent]
+        session.state["agents"] = agents_list if agents_list != list(AGENTS) else []
+        session.save_state()
+        logger.info(
+            "Agent slot removed",
+            f"session={session.name} ({session.id}) agent={agent}",
+        )
+        await session.broadcast_status()
+        return {"ok": True, "agents": build_agent_info(registry.config, session.state)}
+
     @app.get("/api/sessions/{session_id}/completions")
     async def get_completions(session_id: str, q: str = "", kind: str = "all", limit: int = 30):
         session = _get_session(registry, session_id)
@@ -905,7 +963,8 @@ def create_app(registry: SessionRegistry) -> FastAPI:
         files = []
         if kind in ("all", "agents"):
             aliases = session.effective_config().get("aliases", {})
-            agents = [a for a in list_agents(aliases) if a.lower().startswith(q_low)]
+            session_agents = session._session_agents()
+            agents = [a for a in list_agents(aliases, agents=session_agents) if a.lower().startswith(q_low)]
         if kind in ("all", "files"):
             all_files = list_project_files(session.working_root)
             if q_low:
@@ -974,12 +1033,13 @@ def create_app(registry: SessionRegistry) -> FastAPI:
                 status_code=400,
             )
         config = session.effective_config()
+        session_agents = _active_agents(session.config, session.state)
         dispatch = config.get("dispatch", {})
         aliases = config.get("aliases", {})
         context_windows = config.get("context_windows", {})
         results: dict[str, dict] = {}
         for agent in agents:
-            if agent not in AGENTS:
+            if agent not in session_agents:
                 continue
             provider = config.get("providers", {}).get(agent, "")
             family = runtime_family_for_provider(provider, agent)
