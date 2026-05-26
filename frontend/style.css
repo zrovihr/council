@@ -53,11 +53,13 @@ body {
 }
 
 #main-column {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
 /* ---- Session Rail ---- */
@@ -487,10 +489,10 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  grid-column: 1 / -1;
   padding: 8px 16px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
   min-width: 0;
 }
 
@@ -786,10 +788,10 @@ body {
 #config-panel {
   background: #121215;
   border-bottom: 1px solid var(--border);
+  grid-column: 1 / -1;
   max-height: min(70vh, 720px);
   overflow: auto;
   padding: 10px 16px;
-  flex-shrink: 0;
 }
 #config-panel.hidden {
   display: none;
@@ -1144,7 +1146,8 @@ body {
 /* ---- Chat Area ---- */
 
 #chat-area {
-  flex: 1;
+  grid-column: 1;
+  grid-row: 3;
   min-height: 0;
   overflow-anchor: none;
   overflow-y: scroll;
@@ -1164,8 +1167,6 @@ body {
   border-radius: 6px;
   padding: 12px 16px;
   background: var(--surface);
-  content-visibility: auto;
-  contain-intrinsic-size: 200px;
   min-width: 0;
 }
 
@@ -1723,10 +1724,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  grid-column: 1;
+  grid-row: 4;
   padding: 8px 16px 10px;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  flex-shrink: 0;
   min-width: 0;
 }
 
@@ -1808,6 +1810,7 @@ body {
 .agent-prompt-row.shared .agent-prompt-name:hover {
   background: none;
 }
+.agent-prompt-breakdown {
   color: var(--text-dim);
   font-size: 10px;
 }
@@ -1899,12 +1902,18 @@ body {
 }
 
 #send-actions {
-  align-self: stretch;
+  align-self: end;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 6px;
+  grid-column: 2;
+  grid-row: 3 / 5;
   justify-content: flex-end;
-  width: 82px;
+  min-height: 100%;
+  padding: 8px 16px 10px 0;
+  width: 100%;
 }
 
 #send-now-btn,
@@ -2025,6 +2034,11 @@ body {
     grid-template-columns: 1fr;
   }
 
+  #main-column {
+    grid-template-columns: minmax(0, 1fr) 72px;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
   body {
     height: 100dvh;
   }
@@ -2118,6 +2132,8 @@ body {
   }
 
   #chat-area {
+    grid-column: 1 / -1;
+    grid-row: 3;
     padding: 10px;
   }
 
@@ -2149,6 +2165,8 @@ body {
   #input-bar {
     bottom: 0;
     gap: 8px;
+    grid-column: 1;
+    grid-row: 4;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     position: sticky;
     z-index: 120;
@@ -2161,7 +2179,17 @@ body {
   }
 
   #send-actions {
-    width: 72px;
+    align-self: stretch;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    bottom: 0;
+    grid-column: 2;
+    grid-row: 4;
+    min-height: 0;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom)) 0;
+    position: sticky;
+    width: 100%;
+    z-index: 120;
   }
 
   #send-now-btn,

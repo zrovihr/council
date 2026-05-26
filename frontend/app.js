@@ -702,10 +702,15 @@
     }
 
     restoreChatScrollState(scrollState);
-    saveActiveScrollState(true);
 
     requestAnimationFrame(() => {
-      isRenderingChat = false;
+      restoreChatScrollState(scrollState);
+      saveActiveScrollState(true);
+      requestAnimationFrame(() => {
+        restoreChatScrollState(scrollState);
+        saveActiveScrollState(true);
+        isRenderingChat = false;
+      });
     });
   }
 
