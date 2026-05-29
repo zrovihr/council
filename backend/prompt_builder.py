@@ -106,6 +106,10 @@ def build_prompt(target_agent: str, project_root: Path | None, chat_md_path: Pat
         "The orchestrator adds that.\n"
         "7. Keep responses focused. The chat is the medium; "
         "long monologues bloat the log.\n"
+        "When the user asks about code, behavior, bugs, or implementation "
+        "details, actively inspect relevant local files with search and read "
+        "tools before answering. Use the supplied chat context as orientation, "
+        "not as a substitute for verifying the workspace.\n"
     )
 
     session_label = session_name.strip() or chat_md_path.parent.name

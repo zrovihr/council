@@ -53,6 +53,16 @@ OPENCODE_FINAL_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 COUNCIL_ROOT = Path(__file__).resolve().parent.parent
+CLAUDE_EXPLORATION_PROMPT = (
+    "When the user asks about code, behavior, bugs, or implementation details, "
+    "inspect the workspace with available search/read tools before answering; "
+    "do not rely only on the supplied chat context when local files can verify it."
+)
+OPENCODE_EFFORT_VARIANTS = {
+    "low": "minimal",
+    "medium": "high",
+    "high": "max",
+}
 USAGE_PATTERNS = {
     "prompt_tokens": [
         re.compile(r'"prompt_tokens"\s*:\s*(\d[\d,]*)', re.IGNORECASE),
@@ -227,6 +237,7 @@ async def _run_opencode_with_prompt_file(
     timeout: int,
     model: str,
     instruction: str,
+    effort: str = "",
     on_output: Callable[[str, str], Awaitable[None]] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
@@ -242,10 +253,17 @@ async def _run_opencode_with_prompt_file(
         prompt_path = Path(prompt_file.name)
 
     try:
+        argv = [_resolve("opencode"), "run", "-m", model]
+        variant = OPENCODE_EFFORT_VARIANTS.get(effort.strip().lower())
+        if variant:
+            argv.extend(["--variant", variant])
+        argv.extend([
+            "--dangerously-skip-permissions",
+            instruction,
+            f"--file={prompt_path}",
+        ])
         stdout, _stderr = await _run_subprocess_streaming(
-            [_resolve("opencode"), "run", "-m", model,
-             "--dangerously-skip-permissions", instruction,
-             f"--file={prompt_path}"],
+            argv,
             project_root,
             timeout,
             on_output=on_output,
@@ -463,6 +481,7 @@ async def dispatch_claude(prompt: str, project_root: Path,
         argv.extend(["--model", model])
     if effort:
         argv.extend(["--effort", effort])
+    argv.extend(["--append-system-prompt", CLAUDE_EXPLORATION_PROMPT])
     argv.append("-p")
     stdout, stderr = await _run_subprocess(
         argv,
@@ -531,15 +550,13 @@ async def dispatch_deepseek(prompt: str, project_root: Path,
                             effort: str = "",
                             on_output: Callable[[str, str], Awaitable[None]] | None = None,
                             env: dict[str, str] | None = None) -> DispatchResult:
-    # TODO: deepseek reasoning effort is not yet passed to opencode CLI.
-    # opencode may support effort via model suffix or env; investigate.
-    _ = effort
     stdout = await _run_opencode_with_prompt_file(
         prompt,
         project_root,
         timeout,
         model,
         "Read the attached prompt file and respond to the council chat.",
+        effort=effort,
         on_output=on_output,
         env=env,
     )
