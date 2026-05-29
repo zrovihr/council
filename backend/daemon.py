@@ -29,6 +29,30 @@ from .chat_markdown import TURN_HEADER_LINE_RE, iter_turn_header_matches
 logger = logging.getLogger(__name__)
 
 TURN_HEADER_RE = TURN_HEADER_LINE_RE
+CODEX_PROMPT_ECHO_START_RE = re.compile(
+    r"(?:^|\n)user\s*\n=== SAFETY RULES", re.IGNORECASE
+)
+CODEX_PROMPT_ECHO_END = "=== YOUR TURN ==="
+CODEX_PROMPT_ECHO_SUPPRESSED = "Codex CLI prompt echo suppressed from Council trace."
+
+
+def _filter_codex_stderr_trace(
+    text: str,
+    prompt_echo_open: bool = False,
+    prompt_echo_reported: bool = False,
+) -> tuple[str | None, bool, bool]:
+    """Drop Codex CLI's echoed stdin prompt before it bloats session events."""
+    if prompt_echo_open:
+        if CODEX_PROMPT_ECHO_END in text:
+            prompt_echo_open = False
+        return None, prompt_echo_open, prompt_echo_reported
+    if CODEX_PROMPT_ECHO_START_RE.search(text):
+        if CODEX_PROMPT_ECHO_END not in text:
+            prompt_echo_open = True
+        if prompt_echo_reported:
+            return None, prompt_echo_open, prompt_echo_reported
+        return CODEX_PROMPT_ECHO_SUPPRESSED, prompt_echo_open, True
+    return text, prompt_echo_open, prompt_echo_reported
 
 
 def _get_provider(config: dict, agent: str) -> str:
@@ -769,19 +793,36 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
             reserved_turn = True
             await session.notify_chat_update()
 
+            codex_prompt_echo_open = False
+            codex_prompt_echo_reported = False
+
             async def trace_agent_output(source: str, text: str):
-                captured_output_parts.append(f"[{source}]\n{text}")
+                nonlocal codex_prompt_echo_open, codex_prompt_echo_reported
+                visible_text = text
+                if runtime_family == "codex" and source == "stderr":
+                    (
+                        visible_text,
+                        codex_prompt_echo_open,
+                        codex_prompt_echo_reported,
+                    ) = _filter_codex_stderr_trace(
+                        visible_text,
+                        codex_prompt_echo_open,
+                        codex_prompt_echo_reported,
+                    )
+                    if visible_text is None:
+                        return
+                captured_output_parts.append(f"[{source}]\n{visible_text}")
                 dispatch_trace_events.append({
                     "agent": mention,
                     "message": source,
-                    "detail": text,
+                    "detail": visible_text,
                 })
                 await session.add_trace(
                     mention,
                     f"{source}",
-                    text,
+                    visible_text,
                 )
-                await update_running_preview(source, text)
+                await update_running_preview(source, visible_text)
 
             async def run_dispatch() -> DispatchResult:
                 if runtime_family == "claude" or provider == "claude_cli":
@@ -906,6 +947,7 @@ async def session_daemon_loop(session: Session, registry: SessionRegistry):
                     mention,
                     response,
                     response_aliases,
+                    agents=session_agents,
                 ):
                     await enqueue_mention(
                         chained_mention,

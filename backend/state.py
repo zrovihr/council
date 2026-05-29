@@ -20,6 +20,7 @@ AGENTS = ("claude", "codex", "deepseek", "hermes")
 ALIAS_KEYS = (*AGENTS, "you")
 STATE_SECTIONS = ("models", "effort", "roles", "dispatch", "providers", "api_keys", "aliases", "ui", "stats")
 SENSITIVE_SECTIONS = {"api_keys"}
+SENSITIVE_CONFIG_PATHS = {("dispatch", "hermes", "session_key")}
 SECRET_KEYS = ("claude", "codex", "deepseek", "hermes", "openrouter", "deepseek_flash")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TURN_HEADER_LINE_RE = re.compile(r"^##\s+\[@\w+\]\s+.+$")
@@ -58,6 +59,7 @@ def _json_default(path: Path, default: dict) -> dict:
 
 def default_session_state() -> dict:
     return {
+        "agents": [],
         "models": {},
         "effort": {},
         "roles": {},
@@ -109,6 +111,7 @@ def write_config(path: Path, config: dict) -> None:
         "aliases",
         "model_options",
         "effort_options",
+        "context_windows",
         "dispatch",
         "ui",
         "compact",
@@ -133,6 +136,8 @@ def write_config(path: Path, config: dict) -> None:
             for key, value in nested_values.items():
                 if isinstance(value, dict):
                     continue
+                if (section, nested_key, key) in SENSITIVE_CONFIG_PATHS and value:
+                    value = ""
                 lines.append(f"{key} = {_render_toml_value(value)}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -145,6 +150,12 @@ def overlay_config(config: dict, session_state: dict | None) -> dict:
     }
     if not isinstance(session_state, dict):
         return merged
+
+    agents = session_state.get("agents")
+    if isinstance(agents, list):
+        clean_agents = [str(agent).strip().lower() for agent in agents if str(agent).strip()]
+        if clean_agents:
+            merged["agents"] = clean_agents
 
     for section in STATE_SECTIONS:
         overrides = session_state.get(section)
@@ -170,13 +181,18 @@ def overlay_config(config: dict, session_state: dict | None) -> dict:
 
 def redact_config(config: dict) -> dict:
     redacted = {
-        key: value.copy() if isinstance(value, dict) else value
+        key: copy.deepcopy(value) if isinstance(value, dict) else value
         for key, value in config.items()
     }
     redacted["api_keys"] = {
         key: bool(value)
         for key, value in (config.get("api_keys") or {}).items()
     }
+    dispatch = redacted.get("dispatch")
+    if isinstance(dispatch, dict):
+        hermes = dispatch.get("hermes")
+        if isinstance(hermes, dict) and hermes.get("session_key"):
+            hermes["session_key"] = ""
     return redacted
 
 
@@ -831,6 +847,13 @@ class Session:
 
     def save_state(self) -> None:
         clean = default_session_state()
+        agents = self.state.get("agents")
+        if isinstance(agents, list):
+            clean["agents"] = [
+                str(agent).strip().lower()
+                for agent in agents
+                if str(agent).strip()
+            ]
         for section in STATE_SECTIONS:
             values = self.state.get(section)
             clean[section] = values.copy() if isinstance(values, dict) else {}
@@ -1479,8 +1502,37 @@ class SessionRegistry:
         secrets = _json_default(self.secrets_path, {"api_keys": {}})
         if isinstance(secrets.get("api_keys"), dict):
             self.config.setdefault("api_keys", {}).update(secrets["api_keys"])
+        hermes_secret = (
+            secrets.get("dispatch", {})
+            if isinstance(secrets.get("dispatch"), dict)
+            else {}
+        )
+        hermes_secret = (
+            hermes_secret.get("hermes", {})
+            if isinstance(hermes_secret.get("hermes"), dict)
+            else {}
+        )
+        session_key = str(hermes_secret.get("session_key") or "").strip()
+        if session_key:
+            dispatch = self.config.setdefault("dispatch", {})
+            hermes = dispatch.setdefault("hermes", {})
+            if isinstance(hermes, dict) and not hermes.get("session_key"):
+                hermes["session_key"] = session_key
         self.sessions: dict[str, Session] = {}
         self.active_session_id: str | None = None
+
+    def _save_secrets(self) -> None:
+        data = {"api_keys": self.config.get("api_keys", {})}
+        dispatch = self.config.get("dispatch", {})
+        hermes = dispatch.get("hermes", {}) if isinstance(dispatch, dict) else {}
+        session_key = str(hermes.get("session_key") or "").strip() if isinstance(hermes, dict) else ""
+        if session_key:
+            data["dispatch"] = {"hermes": {"session_key": session_key}}
+        self.secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        self.secrets_path.write_text(
+            json.dumps(data, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def _project_sessions_dir(self, project_root: Path) -> Path:
         try:
@@ -1630,11 +1682,7 @@ class SessionRegistry:
 
         saved_state["api_keys"] = {}
         state_path.write_text(json.dumps(saved_state, indent=2) + "\n", encoding="utf-8")
-        self.secrets_path.parent.mkdir(parents=True, exist_ok=True)
-        self.secrets_path.write_text(
-            json.dumps({"api_keys": self.config.get("api_keys", {})}, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        self._save_secrets()
 
     def _new_session_id(self) -> str:
         while True:
@@ -1787,6 +1835,8 @@ class SessionRegistry:
                             target[key] = nested_target
                         for nested_key, nested_value in value.items():
                             nested_target[nested_key] = str(nested_value)
+                            if (section, key, nested_key) in SENSITIVE_CONFIG_PATHS:
+                                touched_secrets = True
                         continue
                     target[key] = str(value)
                     continue
@@ -1816,14 +1866,7 @@ class SessionRegistry:
         if self.config_path is not None:
             write_config(self.config_path, self.config)
         if touched_secrets:
-            self.secrets_path.parent.mkdir(parents=True, exist_ok=True)
-            self.secrets_path.write_text(
-                json.dumps(
-                    {"api_keys": self.config.get("api_keys", {})},
-                    indent=2,
-                ) + "\n",
-                encoding="utf-8",
-            )
+            self._save_secrets()
         for session in self.sessions.values():
             await session.add_trace("system", "global config updated", ", ".join(changes.keys()))
             await session.broadcast_status()
