@@ -1364,6 +1364,29 @@ body {
   background: rgba(255,255,255,0.06);
 }
 
+.turn-reply-btn {
+  display: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 14px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.turn-reply-btn:hover {
+  color: #93c5fd;
+  border-color: rgba(96,165,250,0.45);
+  background: #121a2a;
+}
+.turn-card:hover .turn-reply-btn {
+  display: block;
+}
+
 .turn-erase-btn {
   display: none;
   background: none;
@@ -2154,7 +2177,8 @@ body {
 
   .turn-more-wrap,
   .turn-erase-btn,
-  .turn-edit-btn {
+  .turn-edit-btn,
+  .turn-reply-btn {
     display: block;
   }
 

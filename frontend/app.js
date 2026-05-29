@@ -69,7 +69,9 @@
   let sessions = [];
   let activeSessionId = null;
   const sessionScrollStates = new Map();
+  const sessionInputStates = new Map();
   const SCROLL_STORAGE_KEY = 'council.sessionScrollStates.v1';
+  const INPUT_STORAGE_KEY = 'council.sessionInputStates.v1';
   let editState = null;
   let openTurnMenu = null;
   let renamingSessionId = null;
@@ -145,6 +147,13 @@
         if (value && typeof value === 'object') sessionScrollStates.set(key, value);
       });
     } catch (_) {}
+    try {
+      const raw = localStorage.getItem(INPUT_STORAGE_KEY);
+      const data = raw ? JSON.parse(raw) : {};
+      Object.entries(data || {}).forEach(([key, value]) => {
+        if (typeof value === 'string') sessionInputStates.set(key, value);
+      });
+    } catch (_) {}
   }
 
   function persistScrollStates() {
@@ -154,6 +163,33 @@
         JSON.stringify(Object.fromEntries(sessionScrollStates.entries()))
       );
     } catch (_) {}
+  }
+
+  function persistInputStates() {
+    try {
+      localStorage.setItem(
+        INPUT_STORAGE_KEY,
+        JSON.stringify(Object.fromEntries(sessionInputStates.entries()))
+      );
+    } catch (_) {}
+  }
+
+  function saveActiveInputState() {
+    if (!activeSessionId) return;
+    const value = msgInput.value;
+    if (value) {
+      sessionInputStates.set(activeSessionId, value);
+    } else {
+      sessionInputStates.delete(activeSessionId);
+    }
+    persistInputStates();
+  }
+
+  function restoreActiveInputState() {
+    if (!activeSessionId) return;
+    const saved = sessionInputStates.get(activeSessionId);
+    msgInput.value = saved || '';
+    refreshComposer();
   }
 
   chatArea.addEventListener('scroll', () => {
@@ -679,6 +715,28 @@
       moreWrap.appendChild(moreBtn);
       moreWrap.appendChild(moreMenu);
       header.appendChild(moreWrap);
+
+      const replyBtn = document.createElement('button');
+      replyBtn.className = 'turn-reply-btn';
+      replyBtn.textContent = '\u21A9';
+      replyBtn.title = 'Reply to this message';
+      replyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const author = turn.author;
+        if (author === 'you' || author === 'system' || author === 'summarizer') return;
+        const mention = '@' + displayAuthor(author);
+        const currentText = msgInput.value;
+        if (agentMentions(currentText).indexOf(author) >= 0) return;
+        const aliases = currentAgentAliases();
+        for (const id of AGENT_IDS) {
+          if (id !== author && (aliases[id] || '').toLowerCase() === author.toLowerCase()) {
+            if (agentMentions(currentText).indexOf(id) >= 0) return;
+            break;
+          }
+        }
+        insertAtCursor(mention + ' ');
+      });
+      header.appendChild(replyBtn);
 
       const eraseBtn = document.createElement('button');
       eraseBtn.className = 'turn-erase-btn';
@@ -1479,13 +1537,14 @@
     closeMobileDrawers();
     if (sessionId === activeSessionId) return;
     saveActiveScrollState();
+    saveActiveInputState();
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activate`, { method: 'POST' });
     activeSessionId = sessionId;
     latestAgentsMd = null;
     latestTurns = [];
     latestTokenData = null;
     chatInner.innerHTML = '';
-    msgInput.value = '';
+    restoreActiveInputState();
     const savedState = sessionScrollStates.get(sessionId);
     userScrolledUp = Boolean(savedState && !savedState.atBottom);
     renderSessions();
